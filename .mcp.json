@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "edocs-aauth": {
+      "command": "${PLUGIN_ROOT}/scripts/run_proxy.sh",
+      "args": []
+    }
+  }
+}
