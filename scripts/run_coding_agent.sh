@@ -34,9 +34,13 @@ case "${client}" in
       "$@"
     ;;
   claude)
+    # Built-in tools (Read, Bash, Edit, ...) are unrelated to the AAuth/eDocs
+    # consent flow and default to unprompted access to the local checkout;
+    # deny them so the session is limited to the edocs-aauth MCP tools.
     exec "${CLAUDE_BIN:-claude}" \
       --strict-mcp-config \
       --mcp-config "${EDOCS_CLAUDE_MCP_CONFIG}" \
+      --disallowedTools "Read,Bash,Grep,Glob,Edit,Write,WebFetch,WebSearch,Task,NotebookEdit,TodoWrite,BashOutput,KillShell,ExitPlanMode" \
       "$@"
     ;;
   *)
