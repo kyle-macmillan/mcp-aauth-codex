@@ -1,10 +1,18 @@
-# eDocs AAuth Codex plugin
+# eDocs AAuth coding-agent bridge
 
-This plugin exposes a local stdio MCP server to Codex. The server acts as an
-AAuth-aware client of the remote eDocs Streamable HTTP MCP server. Codex does
-not need a custom HTTP authentication implementation.
+This project exposes a local stdio MCP server to Codex and Claude Code. The
+server acts as an AAuth-aware client of remote eDocs Streamable HTTP MCP
+servers, so coding-agent hosts do not need custom HTTP authentication
+implementations.
 
-Set these variables before starting Codex:
+The bridge uses standard MCP tools, tool annotations, server instructions, and
+form elicitation. Host-specific code is limited to launch configuration:
+`mcp_edocs_agent.gateway.EdocsGateway` owns discovery, authorization, consent,
+and invocation, while `mcp_edocs_agent.mcp_adapter` exposes that API over MCP.
+The former `mcp_aauth_codex` Python package and `mcp-aauth-codex` command remain
+as compatibility aliases.
+
+Set these variables before starting a coding-agent host:
 
 - `EDOCS_PROVIDER_FILE`: path to the private provider-directory JSON file
 - `EDOCS_AGENT_TOKEN_FILE`: path to the agent token
@@ -14,14 +22,14 @@ Set these variables before starting Codex:
 The plugin provides `list_providers()`,
 `list_resources(provider_id)`, and
 `invoke_edocs_function(resource_uri, function_id, arguments)`.
-Provider listing comes from the proxy's directory, while resource listing is
+Provider listing comes from the bridge's directory, while resource listing is
 forwarded live to the selected provider's MCP server without starting a
 consent flow. The selected provider ID is repeated at authorization and
 execution, so a directory entry that points Alice at Bob's endpoint is rejected
 before consent or materialization. A remote AAuth resource challenge is
 exchanged at the Person Server. If consent is
-required, the proxy asks Codex to display an MCP elicitation containing only
-the PS-verified eDocs claims. A grant is submitted to the PS, the proxy polls
+required, the bridge asks the host to display an MCP elicitation containing only
+the PS-verified eDocs claims. A grant is submitted to the PS, the bridge polls
 for the final resource-scoped token, and the original MCP request is retried.
 
 `EDOCS_PERSON` is only the current prototype login bridge. Production person
@@ -30,33 +38,48 @@ not pass credentials through an MCP elicitation.
 
 Install the locked local development environment with `uv sync --frozen`.
 The demo launcher uses this project's `.venv`, including DuckDB and the
-editable adjacent dependencies. The lightweight stdio proxy launcher reuses
-the adjacent `mcp-aauth` environment, which already contains the local MCP SDK
-fork.
+editable adjacent dependencies. The stdio bridge launcher prefers this
+project's environment and retains the adjacent `mcp-aauth` environment as a
+workspace fallback.
 
-## Live Codex demo
+## Live demo
 
-From this directory, run:
+From this directory, launch Codex (the backward-compatible default):
 
 ```bash
 scripts/run_demo.sh
+# Equivalent:
+scripts/run_demo.sh --client codex
 ```
 
-For three independent Codex sessions, install `tmux` and run:
+Or launch Claude Code:
+
+```bash
+scripts/run_demo.sh --client claude
+```
+
+Arguments after `--` are passed to the selected client. For example:
+
+```bash
+scripts/run_demo.sh --client claude -- --model sonnet
+```
+
+For three independent sessions, install `tmux` and run either:
 
 ```bash
 scripts/run_multi_agent_demo.sh
+scripts/run_multi_agent_demo.sh --client claude
 ```
 
 The multi-agent launcher opens tiled Producer, Carol, and Bob panes backed by
 distinct private keys and agent tokens:
 
-- Producer: `aauth:codex@demo.local`
+- Producer: `aauth:producer@demo.local`
 - Carol: `aauth:carol@demo.local`
 - Bob: `aauth:bob@demo.local`
 
 All three sessions share the same provider directory, function registry,
-Sentinel, and control panel, while each proxy receives only its own credential
+Sentinel, and control panel, while each bridge receives only its own credential
 files. The generated configurations live under
 `.demo-state/agents/{producer,carol,bob}.{env,jwk,token}` with mode `0600`.
 The existing `run_demo.sh` remains the single-window Producer launcher.
@@ -66,14 +89,30 @@ provider discovery. Invoking the producer's derived output from those sessions
 is intentionally not wired yet: the derived-resource service and dynamic
 destination handling remain deferred.
 
-The launcher composes the shared AAuth Agent Provider, Person Server, and
+The launchers compose the shared AAuth Agent Provider, Person Server, and
 Sentinel with three independent provider domains. Alice, Bob, and Carol each
 have their own Access Server, MCP resource server, source agent, signing key,
 catalog, and DuckDB storage. It generates an ephemeral demo agent key, token,
-and private `providers.json` directory under `.demo-state/`, then starts
-Codex with a one-run `mcp_servers.edocs-aauth` configuration. It also enables
-the `mcp_elicitations` approval category for that run so Codex can display the
-eDocs consent form. It does not modify your user-level Codex configuration.
+and private `providers.json` directory under `.demo-state/`. Codex receives a
+one-run `mcp_servers.edocs-aauth` configuration with MCP elicitation approval
+enabled. Claude Code receives a generated role-specific MCP config through
+`--strict-mcp-config`. Neither path modifies user-level configuration.
+
+Generated credentials, environment files, and Claude MCP configurations live
+under `.demo-state/agents/` with mode `0600`.
+
+## Plugin manifests
+
+The repository contains both host adapters:
+
+- `.codex-plugin/plugin.json` points Codex at `.mcp.json`.
+- `.claude-plugin/plugin.json` declares the same stdio MCP server using
+  `${CLAUDE_PLUGIN_ROOT}`.
+
+The demo launcher does not require either plugin to be installed; it supplies
+an isolated per-run configuration. The Claude manifest follows Claude Code's
+plugin layout and expects the same `EDOCS_*` environment variables listed
+above.
 
 The demo setup script resets all three resource-owned DuckDB databases. The
 providers deliberately use the same opaque local ID, exposed as distinct
@@ -106,7 +145,7 @@ controllers, functions, and materialized dataflows. Refresh it after an
 invocation to show the resulting provenance state. Its function table displays
 each function's ID, description, and SQL.
 
-The dashboard and the Codex-facing `register_edocs_function` tool can upload a
+The dashboard and agent-facing `register_edocs_function` tool can upload a
 schema-conforming function to the demo's shared mutable registry. The current
 demo runtime accepts one read-only SQL statement and computes the immutable
 descriptor digest server-side. Registration installs the function for all
@@ -122,19 +161,19 @@ current policy status. Functions with no matching provider policy are labeled
 before demonstrating the rejected call.
 
 Alice also starts with a future-output policy. Before any query result exists,
-it permits `identity@1` from Codex to Carol over any derived eDoc whose trusted
-producer is Alice's exact seeded `query_table@1` dataflow. It does not permit
-the equivalent Bob destination. The policy stores an `OutputOf(producer)`
-selector rather than guessing a future eDoc ID.
+it permits `identity@1` from Producer to Carol over any derived eDoc whose
+trusted producer is Alice's exact seeded `query_table@1` dataflow. It does not
+permit the equivalent Bob destination. The policy stores an
+`OutputOf(producer)` selector rather than guessing a future eDoc ID.
 
 Issuing authorization no longer marks a dataflow as materialized. After a
 provider function completes successfully, the provider records a derived eDoc
-with a unique opaque ID, the exact producer dataflow, output digest, Codex as
+with a unique opaque ID, the exact producer dataflow, output digest, Producer as
 custodian, and inherited controllers. The Sentinel dashboard shows these
 derived eDocs and their provenance. Alice's future-output rule begins matching
 the concrete derived ID only after this registration.
 
-In Codex, ask:
+In either coding agent, ask:
 
 ```text
 List the available providers, list Alice's resources, then use query_table@1
@@ -142,13 +181,13 @@ on edoc://alice/doc_01JDEMO7F3A with:
 {"statement":"SELECT name, department FROM document WHERE department = ? ORDER BY name","parameters":["engineering"]}
 ```
 
-Codex calls the local stdio proxy. The proxy obtains an agent-signed proactive
-resource token, and displays an MCP elicitation containing the Person
-Server-verified function, opaque eDoc, exact arguments, agents, resource,
-Sentinel, and controllers. After approval and Sentinel authorization, the
-resource verifies the invocation digest and executes it against its own
-DuckDB instance.
+The coding agent calls the local stdio bridge. The bridge obtains an
+agent-signed proactive resource token, and displays an MCP elicitation
+containing the Person Server-verified function, opaque eDoc, exact arguments,
+agents, resource, Sentinel, and controllers. After approval and Sentinel
+authorization, the resource verifies the invocation digest and executes it
+against its own DuckDB instance.
 
-The launcher stops the localhost services when Codex exits. The
+The launcher stops the localhost services when the coding agent exits. The
 `EDOCS_PERSON=alice` login and generated `.demo-state/` credentials are
 strictly demo-only; they are not a production person-authentication design.

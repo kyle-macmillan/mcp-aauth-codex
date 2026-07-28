@@ -11,8 +11,8 @@ from mcp.server.mcpserver import Context
 from mcp_types import ElicitRequestParams, ElicitResult
 
 from mcp_aauth import aauth_authorization
-from mcp_aauth_codex.config import ProxyConfig
-from mcp_aauth_codex.proxy import build_server
+from mcp_edocs_agent.config import AgentRuntimeConfig
+from mcp_edocs_agent.mcp_adapter import build_server
 
 
 def _edocs_test_support():
@@ -32,7 +32,7 @@ def _edocs_test_support():
 
 
 @pytest.mark.asyncio
-async def test_proxy_completes_full_aauth_flow_after_codex_elicitation():
+async def test_bridge_completes_full_aauth_flow_after_mcp_elicitation():
     support = _edocs_test_support()
     (
         transport,
@@ -70,8 +70,8 @@ async def test_proxy_completes_full_aauth_flow_after_codex_elicitation():
         f"{support.PS}/login",
         json={"person": "alice"},
     ).status_code == 200
-    proxy = build_server(
-        ProxyConfig(
+    bridge = build_server(
+        AgentRuntimeConfig(
             remote_mcp_url=f"{support.RESOURCE}/mcp",
             agent_token=agent_token,
             signing_key=keys["agent"],
@@ -88,7 +88,7 @@ async def test_proxy_completes_full_aauth_flow_after_codex_elicitation():
 
     async with remote.session_manager.run():
         async with Client(
-            proxy,
+            bridge,
             mode="legacy",
             elicitation_callback=approve,
         ) as client:

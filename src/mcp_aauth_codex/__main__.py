@@ -1,14 +1,6 @@
-"""Plugin process entry point."""
+"""Compatibility entry point for the eDocs agent bridge."""
 
-import anyio
-
-from .config import ProxyConfig
-from .proxy import build_server
-
-
-def main() -> None:
-    server = build_server(ProxyConfig.from_env())
-    anyio.run(server.run_stdio_async)
+from mcp_edocs_agent.__main__ import main
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
-"""Codex-facing MCP proxy for AAuth-protected eDocs resources."""
+"""Compatibility package for the host-neutral eDocs agent bridge."""
 
-from .config import ProxyConfig
-from .proxy import build_server
+from mcp_edocs_agent import AgentRuntimeConfig, build_server
 
-__all__ = ["ProxyConfig", "build_server"]
+ProxyConfig = AgentRuntimeConfig
+
+__all__ = ["AgentRuntimeConfig", "ProxyConfig", "build_server"]

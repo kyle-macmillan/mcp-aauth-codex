@@ -1,0 +1,22 @@
+{
+  "name": "edocs-aauth",
+  "version": "0.1.0",
+  "description": "Use AAuth-protected eDocs MCP tools from Claude Code",
+  "author": {
+    "name": "eDocs"
+  },
+  "mcpServers": {
+    "edocs-aauth": {
+      "type": "stdio",
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/run_proxy.sh",
+      "args": [],
+      "env": {
+        "EDOCS_PROVIDER_FILE": "${EDOCS_PROVIDER_FILE}",
+        "EDOCS_AGENT_KEY_FILE": "${EDOCS_AGENT_KEY_FILE}",
+        "EDOCS_AGENT_TOKEN_FILE": "${EDOCS_AGENT_TOKEN_FILE}",
+        "EDOCS_PERSON": "${EDOCS_PERSON}",
+        "EDOCS_FUNCTION_REGISTRY_URL": "${EDOCS_FUNCTION_REGISTRY_URL}"
+      }
+    }
+  }
+}

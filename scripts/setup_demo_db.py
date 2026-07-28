@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from mcp_aauth_codex.demo_database import setup_demo_database
+from mcp_edocs_agent.demo_database import setup_demo_database
 
 
 def main() -> None:

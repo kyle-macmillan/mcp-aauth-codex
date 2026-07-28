@@ -11,7 +11,7 @@ AAuth does not validate function schemas or SQL.
 
 Related implementation commits are `aauth/55673bc` on `edocs-demo` and
 `mcp-aauth/12d909e` on `edocs-demo`; the preceding exact-binding commits are
-`aauth/4ff9f98` and `mcp-aauth/ed734ed`. The local `python-sdk` fork remains
+`aauth/4ff9f98` and `mcp-aauth/ed734ed`. The local `mcp-python-sdk` fork remains
 unchanged on `aauth-auth-middleware-hook`. Verification is 212 passed and
 1 skipped in `aauth`, 68 passed in `mcp-aauth`, and 19 passed here.
 

@@ -1,7 +1,7 @@
 {
   "name": "mcp-aauth-codex",
   "version": "0.1.0",
-  "description": "Use AAuth-protected eDocs MCP tools from Codex",
+  "description": "Use the host-neutral eDocs AAuth MCP bridge from Codex",
   "author": {
     "name": "eDocs"
   },
@@ -9,7 +9,7 @@
   "interface": {
     "displayName": "eDocs AAuth",
     "shortDescription": "Call AAuth-protected eDocs tools from Codex.",
-    "longDescription": "Adds a local stdio MCP proxy that handles AAuth resource challenges, eDocs consent, and authenticated calls to a remote Streamable HTTP MCP server.",
+    "longDescription": "Adds the shared local stdio bridge that handles AAuth resource challenges, eDocs consent, and authenticated calls to remote Streamable HTTP MCP servers.",
     "developerName": "eDocs",
     "category": "Developer Tools",
     "capabilities": ["MCP server", "AAuth", "eDocs consent"],

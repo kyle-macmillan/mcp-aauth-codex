@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "mcp-aauth-codex"
+name = "mcp-edocs-agent"
 version = "0.1.0"
-description = "Codex stdio proxy for AAuth-protected eDocs MCP servers"
+description = "Coding-agent bridge for AAuth-protected eDocs MCP servers"
 requires-python = ">=3.10"
 dependencies = [
     "aauth-edocs[flask]",
@@ -19,13 +19,14 @@ dependencies = [
 ]
 
 [project.scripts]
+mcp-edocs-agent = "mcp_edocs_agent.__main__:main"
 mcp-aauth-codex = "mcp_aauth_codex.__main__:main"
 
 [dependency-groups]
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/mcp_aauth_codex"]
+packages = ["src/mcp_edocs_agent", "src/mcp_aauth_codex"]
 
 [tool.uv.sources]
 aauth-edocs = { path = "../aauth", editable = true }

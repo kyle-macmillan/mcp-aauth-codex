@@ -25,7 +25,7 @@ def test_remote_tool_is_derived_from_versioned_function():
     assert _remote_tool("summarize_edoc@2026-07") == "summarize_edoc"
 
 
-def test_codex_consent_schema_omits_pydantic_root_title():
+def test_consent_schema_uses_strict_mcp_form_root():
     schema = render_elicitation_schema(ConsentDecision)
 
     assert set(schema) == {"type", "properties", "required"}
@@ -62,11 +62,10 @@ def test_prompt_contains_ps_verified_edocs_facts():
         review.edoc_id,
         review.destination_agent,
         *review.controllers,
-        review.resource,
-        review.authorization_audience,
     ):
         assert value in message
-    assert "Arguments:\n{}" in message
+    assert "arguments={}" in message
+    assert len(message.splitlines()) == 1
 
 
 @pytest.mark.asyncio

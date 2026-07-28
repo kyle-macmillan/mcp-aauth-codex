@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -762,7 +762,7 @@ dev = [
 ]
 
 [[package]]
-name = "mcp-aauth-codex"
+name = "mcp-edocs-agent"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
@@ -815,13 +815,6 @@ requires-dist = [
     { name = "aauth-edocs", editable = "../aauth" },
     { name = "mcp", editable = "../mcp-python-sdk" },
     { name = "mcp-aauth", editable = "../mcp-aauth" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "httpx2", specifier = ">=2.5.0" },
-    { name = "pytest", specifier = ">=8" },
-    { name = "pytest-asyncio", specifier = ">=0.23" },
 ]
 
 [[package]]

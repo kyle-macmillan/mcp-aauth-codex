@@ -404,6 +404,22 @@ async def test_live_demo_stack_runs_complete_flow(monkeypatch, tmp_path):
                 name, value = line.split("=", 1)
                 role_env[name] = value
             assert role_env["EDOCS_DEMO_AGENT_ID"] == agent_id
+            claude_config = (
+                state_dir / "agents" / f"{role}.claude-mcp.json"
+            )
+            assert role_env["EDOCS_CLAUDE_MCP_CONFIG"] == str(
+                claude_config
+            )
+            claude_server = json.loads(claude_config.read_text())[
+                "mcpServers"
+            ]["edocs-aauth"]
+            assert claude_server["type"] == "stdio"
+            assert claude_server["env"]["EDOCS_AGENT_KEY_FILE"] == (
+                role_env["EDOCS_AGENT_KEY_FILE"]
+            )
+            assert claude_server["env"]["EDOCS_AGENT_TOKEN_FILE"] == (
+                role_env["EDOCS_AGENT_TOKEN_FILE"]
+            )
             assert role_env["EDOCS_DEMO_AGENT_ROLE"] == role
             assert peek_jwt(
                 (state_dir / "agents" / f"{role}.token").read_text()
@@ -413,6 +429,7 @@ async def test_live_demo_stack_runs_complete_flow(monkeypatch, tmp_path):
                 assert stat.S_IMODE(
                     (state_dir / "agents" / f"{role}.{suffix}").stat().st_mode
                 ) == 0o600
+            assert stat.S_IMODE(claude_config.stat().st_mode) == 0o600
         assert len(key_paths) == 3
     finally:
         stack.stop()
