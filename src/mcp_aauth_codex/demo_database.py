@@ -10,7 +10,7 @@ from pathlib import Path
 import duckdb
 
 DEMO_EDOC_ID = "doc_01JDEMO7F3A"
-DEMO_RESOURCE_URI = f"edoc://demo/{DEMO_EDOC_ID}"
+DEMO_RESOURCE_URI = f"edoc://alice/{DEMO_EDOC_ID}"
 
 
 @dataclass(frozen=True)
@@ -21,12 +21,15 @@ class CatalogEntry:
     resource_uri: str
     title: str
     description: str
-    media_type: str
     original_filename: str
     database_path: str
 
 
-def setup_demo_database(state_dir: Path) -> dict[str, CatalogEntry]:
+def setup_demo_database(
+    state_dir: Path,
+    *,
+    provider_id: str = "alice",
+) -> dict[str, CatalogEntry]:
     """Reset and seed the resource's DuckDB-backed demo catalog."""
     resources_dir = state_dir / "resources"
     if resources_dir.exists():
@@ -34,6 +37,30 @@ def setup_demo_database(state_dir: Path) -> dict[str, CatalogEntry]:
     resources_dir.mkdir(parents=True, mode=0o700)
 
     database_path = resources_dir / f"{DEMO_EDOC_ID}.duckdb"
+    rows_by_provider = {
+        "alice": [
+            ("Avery", "engineering", 125000),
+            ("Blair", "finance", 110000),
+            ("Casey", "engineering", 118000),
+            ("Devon", "legal", 132000),
+        ],
+        "bob": [
+            ("Morgan", "engineering", 121000),
+            ("Riley", "finance", 115000),
+            ("Taylor", "engineering", 123000),
+            ("Jordan", "legal", 129000),
+        ],
+        "carol": [
+            ("Emerson", "engineering", 127000),
+            ("Finley", "finance", 117000),
+            ("Harper", "engineering", 124000),
+            ("Parker", "legal", 131000),
+        ],
+    }
+    try:
+        rows = rows_by_provider[provider_id]
+    except KeyError as error:
+        raise ValueError(f"unknown demo provider: {provider_id}") from error
     connection = duckdb.connect(str(database_path))
     try:
         connection.execute(
@@ -45,24 +72,22 @@ def setup_demo_database(state_dir: Path) -> dict[str, CatalogEntry]:
             )
             """
         )
-        connection.executemany(
-            "INSERT INTO document VALUES (?, ?, ?)",
-            [
-                ("Avery", "engineering", 125000),
-                ("Blair", "finance", 110000),
-                ("Casey", "engineering", 118000),
-                ("Devon", "legal", 132000),
-            ],
-        )
+        connection.executemany("INSERT INTO document VALUES (?, ?, ?)", rows)
     finally:
         connection.close()
 
     entry = CatalogEntry(
         edoc_id=DEMO_EDOC_ID,
-        resource_uri=DEMO_RESOURCE_URI,
-        title="Employee directory",
-        description="Representative tabular data for the eDocs authorization demo",
-        media_type="text/csv",
+        resource_uri=f"edoc://{provider_id}/{DEMO_EDOC_ID}",
+        title=(
+            "Employee directory"
+            if provider_id == "alice"
+            else f"{provider_id.title()} employee directory"
+        ),
+        description=(
+            f"Representative {provider_id.title()} tabular data for the "
+            "eDocs authorization demo"
+        ),
         original_filename="employees.csv",
         database_path=str(database_path),
     )

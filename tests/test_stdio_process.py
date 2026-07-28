@@ -22,12 +22,25 @@ async def test_launcher_exposes_tool_over_real_stdio(tmp_path):
     )
     key_file = tmp_path / "agent.jwk"
     token_file = tmp_path / "agent.token"
+    provider_file = tmp_path / "providers.json"
     key_file.write_text(json.dumps(agent_key.private_jwk()))
     token_file.write_text(token)
+    provider_file.write_text(
+        json.dumps(
+            [
+                {
+                    "provider_id": "alice",
+                    "display_name": "Alice",
+                    "description": "Alice data",
+                    "mcp_url": "https://resource.example/mcp",
+                }
+            ]
+        )
+    )
     params = StdioServerParameters(
         command=str(plugin_root / "scripts" / "run_proxy.sh"),
         env={
-            "EDOCS_MCP_URL": "https://resource.example/mcp",
+            "EDOCS_PROVIDER_FILE": str(provider_file),
             "EDOCS_AGENT_KEY_FILE": str(key_file),
             "EDOCS_AGENT_TOKEN_FILE": str(token_file),
         },
@@ -42,8 +55,12 @@ async def test_launcher_exposes_tool_over_real_stdio(tmp_path):
             ) as client:
                 tools = await client.list_tools()
 
-    assert [tool.name for tool in tools.tools] == ["invoke_edocs_function"]
-    assert set(tools.tools[0].input_schema["properties"]) == {
+    assert [tool.name for tool in tools.tools] == [
+        "list_providers",
+        "list_resources",
+        "invoke_edocs_function",
+    ]
+    assert set(tools.tools[2].input_schema["properties"]) == {
         "resource_uri",
         "function_id",
         "arguments",

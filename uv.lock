@@ -422,7 +422,7 @@ name = "exceptiongroup"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/50/79/66800aadf48771f6b62f7eb014e352e5d06856655206165d775e675a02c9/exceptiongroup-1.3.1.tar.gz", hash = "sha256:8b412432c6055b0b7d14c310000ae93352ed6754f70fa8f7c34141f91c4e3219", size = 30371, upload-time = "2025-11-21T23:01:54.787Z" }
 wheels = [
@@ -662,7 +662,7 @@ wheels = [
 
 [[package]]
 name = "mcp"
-source = { editable = "../python-sdk" }
+source = { editable = "../mcp-python-sdk" }
 dependencies = [
     { name = "anyio" },
     { name = "httpx2" },
@@ -687,7 +687,7 @@ requires-dist = [
     { name = "anyio", marker = "python_full_version >= '3.14'", specifier = ">=4.10" },
     { name = "httpx2", specifier = ">=2.5.0" },
     { name = "jsonschema", specifier = ">=4.20.0" },
-    { name = "mcp-types", editable = "../python-sdk/src/mcp-types" },
+    { name = "mcp-types", editable = "../mcp-python-sdk/src/mcp-types" },
     { name = "opentelemetry-api", specifier = ">=1.28.0" },
     { name = "pydantic", specifier = ">=2.12.0" },
     { name = "pydantic-settings", specifier = ">=2.5.2" },
@@ -713,8 +713,8 @@ dev = [
     { name = "dirty-equals", specifier = ">=0.9.0" },
     { name = "inline-snapshot", specifier = ">=0.23.0" },
     { name = "logfire", specifier = ">=3.0.0" },
-    { name = "mcp", extras = ["cli"], editable = "../python-sdk" },
-    { name = "mcp-example-stories", editable = "../python-sdk/examples" },
+    { name = "mcp", extras = ["cli"], editable = "../mcp-python-sdk" },
+    { name = "mcp-example-stories", editable = "../mcp-python-sdk/examples" },
     { name = "opentelemetry-sdk", specifier = ">=1.39.1" },
     { name = "pillow", specifier = ">=12.0" },
     { name = "pyright", specifier = ">=1.1.400" },
@@ -771,6 +771,7 @@ dependencies = [
     { name = "httpx2" },
     { name = "mcp" },
     { name = "mcp-aauth" },
+    { name = "mcp-edocs-provider" },
     { name = "pydantic" },
     { name = "requests" },
 ]
@@ -786,8 +787,9 @@ requires-dist = [
     { name = "aauth-edocs", extras = ["flask"], editable = "../aauth" },
     { name = "duckdb", specifier = ">=1.4" },
     { name = "httpx2", specifier = ">=2.5.0" },
-    { name = "mcp", editable = "../python-sdk" },
+    { name = "mcp", editable = "../mcp-python-sdk" },
     { name = "mcp-aauth", editable = "../mcp-aauth" },
+    { name = "mcp-edocs-provider", editable = "../mcp-edocs-provider" },
     { name = "pydantic", specifier = ">=2" },
     { name = "requests", specifier = ">=2" },
 ]
@@ -799,8 +801,32 @@ dev = [
 ]
 
 [[package]]
+name = "mcp-edocs-provider"
+version = "0.1.0"
+source = { editable = "../mcp-edocs-provider" }
+dependencies = [
+    { name = "aauth-edocs" },
+    { name = "mcp" },
+    { name = "mcp-aauth" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aauth-edocs", editable = "../aauth" },
+    { name = "mcp", editable = "../mcp-python-sdk" },
+    { name = "mcp-aauth", editable = "../mcp-aauth" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "httpx2", specifier = ">=2.5.0" },
+    { name = "pytest", specifier = ">=8" },
+    { name = "pytest-asyncio", specifier = ">=0.23" },
+]
+
+[[package]]
 name = "mcp-types"
-source = { editable = "../python-sdk/src/mcp-types" }
+source = { editable = "../mcp-python-sdk/src/mcp-types" }
 dependencies = [
     { name = "pydantic" },
     { name = "typing-extensions" },

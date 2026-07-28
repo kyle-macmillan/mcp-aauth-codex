@@ -9,6 +9,8 @@ from pathlib import Path
 
 from aauth_edocs import SigningKey
 
+from .providers import ProviderEndpoint
+
 
 def _required(name: str) -> str:
     value = os.environ.get(name)
@@ -29,10 +31,26 @@ def _read_secret(name: str) -> str:
 class ProxyConfig:
     """Runtime values kept outside the plugin manifest and MCP tool output."""
 
-    remote_mcp_url: str
     agent_token: str
     signing_key: SigningKey
     person: str | None = None
+    providers: tuple[ProviderEndpoint, ...] = ()
+    remote_mcp_url: str | None = None
+    function_registry_url: str | None = None
+
+    def provider_directory(self) -> tuple[ProviderEndpoint, ...]:
+        if self.providers:
+            return self.providers
+        if not self.remote_mcp_url:
+            raise RuntimeError("proxy has no configured providers")
+        return (
+            ProviderEndpoint(
+                provider_id="alice",
+                display_name="Alice",
+                description="Alice's governed eDocs",
+                mcp_url=self.remote_mcp_url,
+            ),
+        )
 
     @classmethod
     def from_env(cls) -> "ProxyConfig":
@@ -42,9 +60,23 @@ class ProxyConfig:
             raise RuntimeError("EDOCS_AGENT_KEY_FILE must contain a private JWK") from error
         if not isinstance(key_data, dict) or "d" not in key_data:
             raise RuntimeError("EDOCS_AGENT_KEY_FILE must contain a private JWK")
+        try:
+            provider_values = json.loads(_read_secret("EDOCS_PROVIDER_FILE"))
+            providers = tuple(
+                ProviderEndpoint(**value) for value in provider_values
+            )
+        except (json.JSONDecodeError, TypeError, ValueError) as error:
+            raise RuntimeError(
+                "EDOCS_PROVIDER_FILE must contain a provider array"
+            ) from error
+        if not providers:
+            raise RuntimeError("EDOCS_PROVIDER_FILE must contain at least one provider")
         return cls(
-            remote_mcp_url=_required("EDOCS_MCP_URL"),
             agent_token=_read_secret("EDOCS_AGENT_TOKEN_FILE"),
             signing_key=SigningKey.from_private_jwk(key_data),
             person=os.environ.get("EDOCS_PERSON"),
+            providers=providers,
+            function_registry_url=os.environ.get(
+                "EDOCS_FUNCTION_REGISTRY_URL"
+            ),
         )

@@ -46,7 +46,8 @@ async def test_proxy_completes_full_aauth_flow_after_codex_elicitation():
     remote = MCPServer("edocs-remote")
 
     @remote.tool()
-    def identity(edoc_id: str, ctx: Context) -> str:
+    def identity(provider_id: str, edoc_id: str, ctx: Context) -> str:
+        assert provider_id == "alice"
         authorization = ctx.request_context.request.scope["aauth"]
         return resource.identity(authorization, edoc_id=edoc_id)["message"]
 
@@ -91,10 +92,10 @@ async def test_proxy_completes_full_aauth_flow_after_codex_elicitation():
             mode="legacy",
             elicitation_callback=approve,
         ) as client:
-            result = await client.call_tool(
-                "invoke_edocs_function",
+                result = await client.call_tool(
+                    "invoke_edocs_function",
                     {
-                        "resource_uri": f"edoc://demo/{support.EDOC_ID}",
+                        "resource_uri": f"edoc://alice/{support.EDOC_ID}",
                         "function_id": support.FUNCTION,
                         "arguments": {},
                     },
@@ -112,4 +113,4 @@ async def test_proxy_completes_full_aauth_flow_after_codex_elicitation():
     assert support.AGENT in prompt.message
     assert support.AS_A in prompt.message
     assert support.AS_B in prompt.message
-    assert proposal in registry.materialized
+    assert proposal not in registry.materialized

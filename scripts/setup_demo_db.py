@@ -13,9 +13,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-dir", type=Path, default=Path(".demo-state"))
     args = parser.parse_args()
-    catalog = setup_demo_database(args.state_dir.resolve())
-    for entry in catalog.values():
-        print(f"{entry.resource_uri} -> {entry.database_path}")
+    for provider_id in ("alice", "bob", "carol"):
+        catalog = setup_demo_database(
+            args.state_dir.resolve() / provider_id,
+            provider_id=provider_id,
+        )
+        for entry in catalog.values():
+            print(f"{entry.resource_uri} -> {entry.database_path}")
 
 
 if __name__ == "__main__":

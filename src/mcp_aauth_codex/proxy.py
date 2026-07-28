@@ -25,6 +25,7 @@ from mcp_aauth import AAuthAgentHTTPAuth
 from pydantic import BaseModel, Field
 
 from .config import ProxyConfig
+from .providers import ProviderEndpoint
 from .transport import AsyncRequestsTransport, person_transport
 
 
@@ -71,19 +72,24 @@ def _remote_tool(function_id: str) -> str:
     return name
 
 
-def _resource_edoc_id(resource_uri: str) -> str:
+def _resource_target(
+    resource_uri: str,
+    providers: dict[str, ProviderEndpoint],
+) -> tuple[ProviderEndpoint, str]:
     parts = urlsplit(resource_uri)
     edoc_id = parts.path.lstrip("/")
     if (
         parts.scheme != "edoc"
-        or parts.netloc != "demo"
+        or parts.netloc not in providers
         or not edoc_id
         or "/" in edoc_id
         or parts.query
         or parts.fragment
     ):
-        raise ValueError("resource_uri must be an edoc://demo/<opaque-id> URI")
-    return edoc_id
+        raise ValueError(
+            "resource_uri must identify a configured provider and opaque eDoc ID"
+        )
+    return providers[parts.netloc], edoc_id
 
 
 def _resource_origin(mcp_url: str) -> str:
@@ -144,6 +150,62 @@ def build_server(
     )
     consent_client = EdocsConsentClient(consent_transport)
     server = MCPServer("eDocs AAuth proxy")
+    providers = {
+        provider.provider_id: provider
+        for provider in config.provider_directory()
+    }
+    if len(providers) != len(config.provider_directory()):
+        raise ValueError("provider IDs must be unique")
+
+    @server.tool(description="List the configured eDocs providers.")
+    def list_providers() -> dict[str, list[dict[str, str]]]:
+        return {
+            "providers": [
+                provider.public_dict() for provider in providers.values()
+            ]
+        }
+
+    @server.tool(
+        description=(
+            "Fetch the current enabled eDoc metadata directly from one provider's "
+            "public MCP catalog."
+        )
+    )
+    async def list_resources(provider_id: str) -> dict[str, list[dict[str, Any]]]:
+        provider = providers.get(provider_id)
+        if provider is None:
+            raise ValueError(f"unknown provider: {provider_id}")
+        client_options = {"follow_redirects": False}
+        if http_transport is not None:
+            client_options["transport"] = http_transport
+        try:
+            async with (
+                httpx2.AsyncClient(**client_options) as http_client,
+                Client(
+                    streamable_http_client(
+                        provider.mcp_url,
+                        http_client=http_client,
+                    ),
+                    mode="legacy",
+                ) as client,
+            ):
+                result = await client.list_resources()
+        except Exception as error:
+            _raise_remote_error(error)
+        resources = []
+        for resource in result.resources:
+            value = resource.model_dump(
+                mode="json",
+                by_alias=True,
+                exclude_none=True,
+            )
+            uri = str(value.get("uri", ""))
+            if urlsplit(uri).netloc != provider_id:
+                raise RuntimeError(
+                    f"provider {provider_id} returned an unqualified resource URI"
+                )
+            resources.append(value)
+        return {"resources": resources}
 
     @server.tool(
         description=(
@@ -173,10 +235,14 @@ def build_server(
             consent_client=consent_client,
             prompt=prompt,
         )
-        edoc_id = _resource_edoc_id(resource_uri)
-        if "edoc_id" in arguments:
-            raise ValueError("arguments must not override the reserved edoc_id field")
-        origin = _resource_origin(config.remote_mcp_url)
+        provider, edoc_id = _resource_target(resource_uri, providers)
+        reserved = {"edoc_id", "provider_id"}.intersection(arguments)
+        if reserved:
+            raise ValueError(
+                "arguments must not override reserved routing fields: "
+                + ", ".join(sorted(reserved))
+            )
+        origin = _resource_origin(provider.mcp_url)
         signing_auth = AAuthAgentHTTPAuth(
             key=config.signing_key,
             token=config.agent_token,
@@ -190,6 +256,7 @@ def build_server(
         async with httpx2.AsyncClient(**authorize_options) as authorize_client:
             response = await authorize_client.post(
                 f"{origin}/authorize",
+                headers={"Edocs-Provider": provider.provider_id},
                 json={
                     "edoc_id": edoc_id,
                     "function_id": function_id,
@@ -203,7 +270,7 @@ def build_server(
             raise RuntimeError("resource returned no resource token")
         authorization = await coordinator.begin_async(
             resource_token,
-            resource_url=config.remote_mcp_url,
+            resource_url=provider.mcp_url,
         )
         if isinstance(authorization, ApprovalRequired):
             await approval_handler(authorization)
@@ -226,18 +293,69 @@ def build_server(
                 httpx2.AsyncClient(**client_options) as http_client,
                 Client(
                     streamable_http_client(
-                        config.remote_mcp_url,
+                        provider.mcp_url,
                         http_client=http_client,
                     ),
                     mode="legacy",
                 ) as client,
             ):
+                if config.function_registry_url:
+                    remote_tool = "execute_registered_function"
+                    remote_arguments = {
+                        "provider_id": provider.provider_id,
+                        "edoc_id": edoc_id,
+                        "function_id": function_id,
+                        "arguments": arguments,
+                    }
+                else:
+                    remote_tool = _remote_tool(function_id)
+                    remote_arguments = {
+                        "provider_id": provider.provider_id,
+                        "edoc_id": edoc_id,
+                        **arguments,
+                    }
                 result = await client.call_tool(
-                    _remote_tool(function_id),
-                    {"edoc_id": edoc_id, **arguments},
+                    remote_tool,
+                    remote_arguments,
                 )
         except Exception as error:
             _raise_remote_error(error)
         return _result_payload(result)
+
+    if config.function_registry_url:
+        @server.tool(
+            description=(
+                "Upload a schema-conforming function to the shared eDocs "
+                "registry. Registration does not authorize its invocation."
+            )
+        )
+        async def register_edocs_function(
+            function_id: str,
+            description: str,
+            input_schema: dict[str, Any],
+            implementation: dict[str, Any],
+        ) -> dict[str, Any]:
+            options = {"follow_redirects": False}
+            if http_transport is not None:
+                options["transport"] = http_transport
+            async with httpx2.AsyncClient(**options) as client:
+                response = await client.post(
+                    config.function_registry_url,
+                    json={
+                        "function_id": function_id,
+                        "description": description,
+                        "input_schema": input_schema,
+                        "implementation": implementation,
+                    },
+                )
+            body = response.json()
+            if response.status_code != 201:
+                detail = (
+                    body.get("detail")
+                    if isinstance(body, dict)
+                    else "function registration failed"
+                )
+                raise ValueError(detail or "function registration failed")
+            return body
 
     return server

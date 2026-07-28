@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from aauth_edocs import (
@@ -12,7 +14,7 @@ from mcp.server.elicitation import render_elicitation_schema
 from mcp_aauth_codex.proxy import (
     ConsentDecision,
     _approval_message,
-    _resource_edoc_id,
+    _resource_target,
     _remote_tool,
     build_server,
 )
@@ -91,19 +93,43 @@ async def test_server_exposes_only_constrained_edocs_tool():
 
     async with Client(server, mode="legacy") as client:
         tools = await client.list_tools()
+        providers = await client.call_tool("list_providers", {})
+        unknown = await client.call_tool(
+            "list_resources",
+            {"provider_id": "unknown"},
+        )
 
-    assert [tool.name for tool in tools.tools] == ["invoke_edocs_function"]
-    schema = tools.tools[0].input_schema
+    assert [tool.name for tool in tools.tools] == [
+        "list_providers",
+        "list_resources",
+        "invoke_edocs_function",
+    ]
+    schema = tools.tools[2].input_schema
     assert schema["required"] == ["resource_uri", "function_id", "arguments"]
     assert set(schema["properties"]) == {
         "resource_uri",
         "function_id",
         "arguments",
     }
+    assert (
+        json.loads(providers.content[0].text)["providers"][0]["provider_id"]
+        == "alice"
+    )
+    assert unknown.is_error is True
+    assert "unknown provider" in unknown.content[0].text
 
 
-def test_resource_uri_resolves_only_opaque_demo_edocs():
-    assert _resource_edoc_id("edoc://demo/doc_01JDEMO7F3A") == "doc_01JDEMO7F3A"
-    for value in ("employees.csv", "edoc://alice/doc-1", "edoc://demo/a/b"):
+def test_resource_uri_resolves_only_configured_provider_edocs():
+    provider = ProxyConfig(
+        remote_mcp_url="https://resource.example/mcp",
+        agent_token="token",
+        signing_key=SigningKey.generate("agent"),
+    ).provider_directory()[0]
+    providers = {"alice": provider}
+    assert _resource_target("edoc://alice/doc_01JDEMO7F3A", providers) == (
+        provider,
+        "doc_01JDEMO7F3A",
+    )
+    for value in ("employees.csv", "edoc://bob/doc-1", "edoc://alice/a/b"):
         with pytest.raises(ValueError, match="resource_uri"):
-            _resource_edoc_id(value)
+            _resource_target(value, providers)

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import csv
+import io
 import json
 import os
 import signal
@@ -12,56 +14,82 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
+import duckdb
 import requests
 import uvicorn
 from aauth_edocs import (
     AAuthError,
-    ControllerPolicy,
     Dataflow,
     ExactRule,
-    FunctionDescriptor,
+    MutableControllerPolicy,
+    OutputOf,
     ResourceBinding,
     SentinelRegistry,
     SigningKey,
-    VerifiedRequest,
-    AGENT_TYP,
-    build_metadata,
-    build_requirement,
     create_sentinel,
-    hash_function_args,
     issue_agent_token,
-    issue_resource_token,
-    peek_jwt,
+    register_materialization,
 )
 from aauth_edocs.agent import RequestsTransport
 from aauth_edocs.asrv import create_as
-from aauth_edocs.errors import DENIED, INVALID_TOKEN
-from aauth_edocs.headers import AUTH_TOKEN
+from aauth_edocs.errors import INVALID_TOKEN
 from aauth_edocs.httpsig import KeyResolver
-from aauth_edocs.keys import jwk_thumbprint
 from aauth_edocs.ps import create_ps
 from flask import Flask
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
-from mcp_aauth import aauth_agent_authentication, aauth_authorization
-from starlette.types import ASGIApp, Receive, Scope, Send
-from werkzeug.serving import BaseWSGIServer, make_server
+from mcp_edocs_provider import (
+    CatalogEntry as ProviderCatalogEntry,
+    LoadedFunction,
+    ProviderApplication,
+    ProviderCatalog,
+    ProviderResource,
+    ProviderServerConfig,
+    MutableFunctionRegistry,
+    build_provider_server,
+)
+from starlette.types import ASGIApp
+from werkzeug.serving import BaseWSGIServer, WSGIRequestHandler, make_server
 
 from .demo_database import (
+    CatalogEntry as DemoCatalogEntry,
     DEMO_EDOC_ID,
-    CatalogEntry,
     load_demo_catalog,
     setup_demo_database,
 )
-from .functions import LoadedFunction, LocalFunctionLoader, local_query_table_registration
+from .control_panel import DemoProviderAdmin, create_control_panel
+from .functions import (
+    DEMO_FUNCTION_SQL,
+    IDENTITY_FUNCTION_ID,
+    local_demo_function_registrations,
+    sql_function_registration,
+)
 
-FUNCTION_ID = "identity@1"
-EDOC_ID = "doc-123"
 QUERY_FUNCTION_ID = "query_table@1"
 PERSON = "alice"
-SOURCE_AGENT = "aauth:source@demo.local"
+ALICE_SOURCE_AGENT = "aauth:source@alice.demo.local"
+BOB_SOURCE_AGENT = "aauth:source@bob.demo.local"
+CAROL_SOURCE_AGENT = "aauth:source@carol.demo.local"
 DESTINATION_AGENT = "aauth:codex@demo.local"
+CAROL_RECIPIENT_AGENT = "aauth:carol@demo.local"
+BOB_RECIPIENT_AGENT = "aauth:bob@demo.local"
+DEMO_AGENTS = {
+    "producer": DESTINATION_AGENT,
+    "carol": CAROL_RECIPIENT_AGENT,
+    "bob": BOB_RECIPIENT_AGENT,
+}
+
+
+@dataclass(frozen=True)
+class DemoProviderSpec:
+    provider_id: str
+    display_name: str
+    description: str
+    resource_url: str
+    access_server_url: str
+    source_agent: str
 
 
 @dataclass(frozen=True)
@@ -69,294 +97,77 @@ class DemoUrls:
     ap: str = "http://127.0.0.1:8711"
     ps: str = "http://127.0.0.1:8712"
     sentinel: str = "http://127.0.0.1:8713"
-    controller_a: str = "http://127.0.0.1:8714"
-    controller_b: str = "http://127.0.0.1:8715"
-    resource: str = "http://127.0.0.1:8716"
+    alice_as: str = "http://127.0.0.1:8714"
+    alice_resource: str = "http://127.0.0.1:8716"
+    bob_as: str = "http://127.0.0.1:8717"
+    bob_resource: str = "http://127.0.0.1:8718"
+    carol_as: str = "http://127.0.0.1:8719"
+    carol_resource: str = "http://127.0.0.1:8720"
+    control: str = "http://127.0.0.1:8721"
 
     @property
-    def mcp(self) -> str:
-        return f"{self.resource}/mcp"
+    def alice_mcp(self) -> str:
+        return f"{self.alice_resource}/mcp"
+
+    @property
+    def bob_mcp(self) -> str:
+        return f"{self.bob_resource}/mcp"
+
+    @property
+    def carol_mcp(self) -> str:
+        return f"{self.carol_resource}/mcp"
+
+    def provider_specs(self) -> tuple[DemoProviderSpec, ...]:
+        return (
+            DemoProviderSpec(
+                "alice",
+                "Alice",
+                "Alice's governed eDocs",
+                self.alice_resource,
+                self.alice_as,
+                ALICE_SOURCE_AGENT,
+            ),
+            DemoProviderSpec(
+                "bob",
+                "Bob",
+                "Bob's governed eDocs",
+                self.bob_resource,
+                self.bob_as,
+                BOB_SOURCE_AGENT,
+            ),
+            DemoProviderSpec(
+                "carol",
+                "Carol",
+                "Carol's governed eDocs",
+                self.carol_resource,
+                self.carol_as,
+                CAROL_SOURCE_AGENT,
+            ),
+        )
 
 
-@dataclass
-class DemoResource:
-    issuer: str
-    sentinel: str
+@dataclass(frozen=True)
+class ProviderDeployment:
+    provider_id: str
+    display_name: str
+    description: str
+    resource_url: str
+    access_server_url: str
     source_agent: str
-    destination_agent: str
-    key: SigningKey
-    controllers: tuple[str, ...]
-    documents: dict[str, Any]
-    catalog: dict[str, CatalogEntry]
-    functions: dict[str, LoadedFunction]
-    loader: LocalFunctionLoader
+    resource_key: SigningKey
+    access_server_key: SigningKey
+    catalog: ProviderCatalog
 
-    def challenge(self, verified_agent: VerifiedRequest) -> str:
-        agent = verified_agent.claims.get("sub")
-        agent_jwk = (verified_agent.claims.get("cnf") or {}).get("jwk")
-        if not isinstance(agent, str) or not isinstance(agent_jwk, dict):
-            raise AAuthError(INVALID_TOKEN, 401, "agent identity is incomplete")
-        return issue_resource_token(
-            issuer=self.issuer,
-            aud=self.sentinel,
-            agent=agent,
-            agent_jkt=jwk_thumbprint(agent_jwk),
-            scope=FUNCTION_ID,
-            source_agent=self.source_agent,
-            edoc_id=EDOC_ID,
-            controllers=self.controllers,
-            key=self.key,
-        )
-
-    def identity(self, authorization: VerifiedRequest, edoc_id: str) -> str:
-        expected = {
-            "iss": self.sentinel,
-            "aud": self.issuer,
-            "source_agent": self.source_agent,
-            "scope": FUNCTION_ID,
-            "edoc_id": edoc_id,
-            "agent": self.destination_agent,
-            "controllers": list(self.controllers),
-        }
-        for name, value in expected.items():
-            if authorization.claims.get(name) != value:
-                raise AAuthError(
-                    INVALID_TOKEN,
-                    401,
-                    f"authorization {name} does not match the invocation",
-                )
-        try:
-            return self.documents[edoc_id]["message"]
-        except KeyError as error:
-            raise AAuthError(DENIED, 403, "eDoc does not exist") from error
-
-    def authorize(
-        self,
-        verified_agent: VerifiedRequest,
-        *,
-        edoc_id: str,
-        function_id: str,
-        function_args: dict[str, Any],
-    ) -> str:
-        identity_request = function_id == FUNCTION_ID and edoc_id in self.documents
-        deployed_request = (
-            function_id in self.functions and edoc_id in self.catalog
-        )
-        if not identity_request and not deployed_request:
-            raise AAuthError(DENIED, 403, "function is not deployed at this resource")
-        agent = verified_agent.claims.get("sub")
-        agent_jwk = (verified_agent.claims.get("cnf") or {}).get("jwk")
-        if not isinstance(agent, str) or not isinstance(agent_jwk, dict):
-            raise AAuthError(INVALID_TOKEN, 401, "agent identity is incomplete")
-        return issue_resource_token(
-            issuer=self.issuer,
-            aud=self.sentinel,
-            agent=agent,
-            agent_jkt=jwk_thumbprint(agent_jwk),
-            scope=function_id,
-            source_agent=self.source_agent,
-            edoc_id=edoc_id,
-            controllers=self.controllers,
-            function_args=function_args,
-            key=self.key,
-        )
-
-    def execute(
-        self,
-        authorization: VerifiedRequest,
-        *,
-        edoc_id: str,
-        function_id: str,
-        function_args: dict[str, Any],
-    ) -> dict[str, Any]:
-        expected = {
-            "iss": self.sentinel,
-            "aud": self.issuer,
-            "source_agent": self.source_agent,
-            "scope": function_id,
-            "edoc_id": edoc_id,
-            "agent": self.destination_agent,
-            "controllers": list(self.controllers),
-            "function_args_hash": hash_function_args(function_args),
-        }
-        for name, value in expected.items():
-            if authorization.claims.get(name) != value:
-                raise AAuthError(
-                    INVALID_TOKEN,
-                    401,
-                    f"authorization {name} does not match the invocation",
-                )
-        document = self.catalog.get(edoc_id)
-        registration = self.functions.get(function_id)
-        if document is None or registration is None:
-            raise AAuthError(DENIED, 403, "eDoc or function is unavailable")
-        implementation = self.loader.load(registration.descriptor)
-        return implementation(document, function_args)
+    @property
+    def mcp_url(self) -> str:
+        return f"{self.resource_url}/mcp"
 
 
-class ResourceApplication:
-    """Serve resource metadata, proactive authorization, and authorized MCP."""
+class QuietRequestHandler(WSGIRequestHandler):
+    """Suppress routine localhost access lines without hiding server errors."""
 
-    def __init__(
-        self,
-        resource: DemoResource,
-        downstream: ASGIApp,
-        *,
-        key_resolver: KeyResolver,
-    ) -> None:
-        self.resource = resource
-        self.downstream = downstream
-        self.challenge_app = aauth_agent_authentication(
-            key_resolver=key_resolver
-        )(self._challenge)
-        self.authorize_app = aauth_agent_authentication(
-            key_resolver=key_resolver
-        )(self._authorize)
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http" and scope.get("path") in {
-            "/.well-known/aauth-resource.json",
-            "/jwks.json",
-        }:
-            value = (
-                dict(
-                    build_metadata(
-                        self.resource.issuer,
-                        jwks_uri=f"{self.resource.issuer}/jwks.json",
-                    )
-                )
-                if scope["path"] == "/.well-known/aauth-resource.json"
-                else {"keys": [self.resource.key.public_jwk]}
-            )
-            await _send_json(send, 200, value)
-            return
-        if (
-            scope["type"] == "http"
-            and scope.get("path") == "/authorize"
-        ):
-            await self.authorize_app(scope, receive, send)
-            return
-        if (
-            scope["type"] == "http"
-            and scope.get("path") == "/mcp"
-            and _presented_token_type(scope) == AGENT_TYP
-        ):
-            await self.challenge_app(scope, receive, send)
-            return
-        await self.downstream(scope, receive, send)
-
-    async def _authorize(
-        self,
-        scope: Scope,
-        receive: Receive,
-        send: Send,
-    ) -> None:
-        if scope.get("method") != "POST":
-            await _send_json(send, 405, {"error": "method_not_allowed"})
-            return
-        try:
-            body = await _read_json(receive)
-            if set(body) != {"edoc_id", "function_id", "function_args"}:
-                raise AAuthError(
-                    "invalid_request",
-                    400,
-                    "authorization request has the wrong fields",
-                )
-            function_args = body["function_args"]
-            if not isinstance(function_args, dict):
-                raise AAuthError(
-                    "invalid_request",
-                    400,
-                    "function_args must be a JSON object",
-                )
-            token = self.resource.authorize(
-                scope["aauth"],
-                edoc_id=body["edoc_id"],
-                function_id=body["function_id"],
-                function_args=function_args,
-            )
-        except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
-            await _send_json(
-                send,
-                400,
-                {"error": "invalid_request", "detail": "JSON object required"},
-            )
-            return
-        except AAuthError as error:
-            await _send_json(send, error.status, error.body())
-            return
-        await _send_json(send, 200, {"resource_token": token})
-
-    async def _challenge(
-        self,
-        scope: Scope,
-        _receive: Receive,
-        send: Send,
-    ) -> None:
-        token = self.resource.challenge(scope["aauth"])
-        body = json.dumps(
-            {
-                "error": INVALID_TOKEN,
-                "error_description": "authorization token required",
-            }
-        ).encode()
-        requirement = build_requirement(AUTH_TOKEN, resource_token=token)
-        await send(
-            {
-                "type": "http.response.start",
-                "status": 401,
-                "headers": [
-                    (b"content-type", b"application/json"),
-                    (b"content-length", str(len(body)).encode()),
-                    (b"aauth-requirement", requirement.encode()),
-                ],
-            }
-        )
-        await send({"type": "http.response.body", "body": body})
-
-
-async def _send_json(send: Send, status: int, value: dict) -> None:
-    body = json.dumps(value, separators=(",", ":")).encode()
-    await send(
-        {
-            "type": "http.response.start",
-            "status": status,
-            "headers": [
-                (b"content-type", b"application/json"),
-                (b"content-length", str(len(body)).encode()),
-            ],
-        }
-    )
-    await send({"type": "http.response.body", "body": body})
-
-
-async def _read_json(receive: Receive) -> dict[str, Any]:
-    chunks = []
-    while True:
-        message = await receive()
-        chunks.append(message.get("body", b""))
-        if not message.get("more_body"):
-            break
-    value = json.loads(b"".join(chunks).decode("utf-8"))
-    if not isinstance(value, dict):
-        raise TypeError("JSON object required")
-    return value
-
-
-def _presented_token_type(scope: Scope) -> str | None:
-    for name, value in scope.get("headers", []):
-        if name.lower() != b"signature-key":
-            continue
-        signature_key = value.decode("latin-1")
-        marker = 'jwt="'
-        if marker not in signature_key:
-            return None
-        token = signature_key.split(marker, 1)[1].split('"', 1)[0]
-        try:
-            return peek_jwt(token)[0].get("typ")
-        except AAuthError:
-            return None
-    return None
+    def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
+        pass
 
 
 class FlaskService:
@@ -366,6 +177,7 @@ class FlaskService:
             port,
             app,
             threaded=True,
+            request_handler=QuietRequestHandler,
         )
         self.thread = threading.Thread(
             target=self.server.serve_forever,
@@ -388,6 +200,7 @@ class ASGIService:
                 host="127.0.0.1",
                 port=port,
                 log_level="warning",
+                access_log=False,
             )
         )
         self.thread = threading.Thread(
@@ -409,39 +222,61 @@ class DemoStack:
         self.urls = urls
         self.services: list[FlaskService | ASGIService] = []
         self.registry: SentinelRegistry | None = None
+        self.policies: dict[str, MutableControllerPolicy] = {}
+        self.catalogs: dict[str, ProviderCatalog] = {}
+        self.function_registry = MutableFunctionRegistry()
         self._build()
 
     def _build(self) -> None:
         urls = self.urls
+        provider_specs = urls.provider_specs()
         keys = {
             name: SigningKey.generate(name)
             for name in (
                 "ap",
                 "ps",
                 "sentinel",
-                "controller-a",
-                "controller-b",
-                "resource",
-                "agent",
+                *(f"{role}-agent" for role in DEMO_AGENTS),
+                *(
+                    key_name
+                    for spec in provider_specs
+                    for key_name in (
+                        f"{spec.provider_id}-as",
+                        f"{spec.provider_id}-resource",
+                    )
+                ),
             )
         }
-        identity_descriptor = FunctionDescriptor(
-            id=FUNCTION_ID,
-            description="Return the eDoc unchanged",
-            implementation_uri="memory://identity",
-            digest="sha256:identity",
-        )
-        query_registration = local_query_table_registration()
-        catalog = (
-            load_demo_catalog(self.state_dir)
-            if (self.state_dir / "catalog.json").exists()
-            else setup_demo_database(self.state_dir)
-        )
-        identity_proposal = Dataflow(
-            SOURCE_AGENT,
-            FUNCTION_ID,
-            EDOC_ID,
-            DESTINATION_AGENT,
+        seeded_functions = local_demo_function_registrations()
+        self.function_registry = MutableFunctionRegistry()
+        for function_id, registration in seeded_functions.items():
+            self.function_registry.register(
+                registration,
+                artifact={
+                    "runtime": "sql",
+                    "source": (
+                        DEMO_FUNCTION_SQL[function_id]
+                        if function_id in DEMO_FUNCTION_SQL
+                        else (
+                            "identity(input)"
+                            if function_id == IDENTITY_FUNCTION_ID
+                            else "Provided by the caller in function arguments"
+                        )
+                    ),
+                },
+            )
+        deployments = tuple(
+            self._deployment(
+                provider_id=spec.provider_id,
+                display_name=spec.display_name,
+                description=spec.description,
+                resource_url=spec.resource_url,
+                access_server_url=spec.access_server_url,
+                source_agent=spec.source_agent,
+                resource_key=keys[f"{spec.provider_id}-resource"],
+                access_server_key=keys[f"{spec.provider_id}-as"],
+            )
+            for spec in provider_specs
         )
         query_arguments = {
             "statement": (
@@ -450,55 +285,68 @@ class DemoStack:
             ),
             "parameters": ["engineering"],
         }
-        query_proposal = Dataflow.from_arguments(
-            SOURCE_AGENT,
-            QUERY_FUNCTION_ID,
-            DEMO_EDOC_ID,
-            DESTINATION_AGENT,
-            query_arguments,
-        )
         self.registry = SentinelRegistry(
             resource_bindings={
-                SOURCE_AGENT: ResourceBinding(
+                deployment.source_agent: ResourceBinding(
                     source_ps=urls.ps,
-                    resource_issuer=urls.resource,
-                    resource_jkt=keys["resource"].thumbprint,
+                    resource_issuer=deployment.resource_url,
+                    resource_jkt=deployment.resource_key.thumbprint,
                 )
+                for deployment in deployments
             },
             controllers={
-                (urls.resource, EDOC_ID): (
-                    urls.controller_a,
-                    urls.controller_b,
-                ),
-                (urls.resource, DEMO_EDOC_ID): (
-                    urls.controller_a,
-                    urls.controller_b,
-                ),
+                (deployment.resource_url, DEMO_EDOC_ID): (
+                    deployment.access_server_url,
+                )
+                for deployment in deployments
             },
             functions={
-                FUNCTION_ID: identity_descriptor,
-                QUERY_FUNCTION_ID: query_registration.descriptor,
+                function_id: registration.descriptor
+                for function_id, registration in self.function_registry.items()
             },
         )
         transport = RequestsTransport()
-        controller_policy = ControllerPolicy(
-            (ExactRule(identity_proposal), ExactRule(query_proposal))
-        )
         ap = _metadata_app(urls.ap, "aauth-agent.json", keys["ap"])
-        controller_a = create_as(
-            urls.controller_a,
-            key=keys["controller-a"],
-            transport=transport,
-            sentinel=urls.sentinel,
-            controller_policy=controller_policy,
+        query_flows = {
+            deployment.provider_id: Dataflow.from_arguments(
+                deployment.source_agent,
+                QUERY_FUNCTION_ID,
+                DEMO_EDOC_ID,
+                DESTINATION_AGENT,
+                query_arguments,
+            )
+            for deployment in deployments
+        }
+        self.policies = {
+            deployment.provider_id: MutableControllerPolicy(
+                (ExactRule(query_flows[deployment.provider_id]),),
+                derived_resolver=self.registry.derived_documents.get,
+            )
+            for deployment in deployments
+        }
+        self.policies["alice"].create_rule(
+            Dataflow.from_arguments(
+                DESTINATION_AGENT,
+                IDENTITY_FUNCTION_ID,
+                OutputOf(query_flows["alice"]),
+                CAROL_RECIPIENT_AGENT,
+                {},
+            )
         )
-        controller_b = create_as(
-            urls.controller_b,
-            key=keys["controller-b"],
-            transport=transport,
-            sentinel=urls.sentinel,
-            controller_policy=controller_policy,
-        )
+        self.catalogs = {
+            deployment.provider_id: deployment.catalog
+            for deployment in deployments
+        }
+        access_servers = [
+            create_as(
+                deployment.access_server_url,
+                key=deployment.access_server_key,
+                transport=transport,
+                sentinel=urls.sentinel,
+                controller_policy=self.policies[deployment.provider_id],
+            )
+            for deployment in deployments
+        ]
         sentinel = create_sentinel(
             issuer=urls.sentinel,
             registry=self.registry,
@@ -512,109 +360,425 @@ class DemoStack:
             policy=lambda _agent, _resource: "pending",
             transport=transport,
         )
-        agent_token = issue_agent_token(
-            issuer=urls.ap,
-            agent=DESTINATION_AGENT,
-            agent_jwk=keys["agent"].public_jwk,
-            ps=urls.ps,
-            key=keys["ap"],
-        )
+        agent_tokens = {
+            role: issue_agent_token(
+                issuer=urls.ap,
+                agent=agent,
+                agent_jwk=keys[f"{role}-agent"].public_jwk,
+                ps=urls.ps,
+                key=keys["ap"],
+            )
+            for role, agent in DEMO_AGENTS.items()
+        }
         resolver = _static_and_remote_resolver(
             {
                 urls.ap: keys["ap"].public_jwk,
                 urls.sentinel: keys["sentinel"].public_jwk,
-                urls.controller_a: keys["controller-a"].public_jwk,
-                urls.controller_b: keys["controller-b"].public_jwk,
+                **{
+                    deployment.access_server_url: (
+                        deployment.access_server_key.public_jwk
+                    )
+                    for deployment in deployments
+                },
             }
         )
-        resource = DemoResource(
-            issuer=urls.resource,
-            sentinel=urls.sentinel,
-            source_agent=SOURCE_AGENT,
-            destination_agent=DESTINATION_AGENT,
-            key=keys["resource"],
-            controllers=(urls.controller_a, urls.controller_b),
-            documents={EDOC_ID: {"message": "hello"}},
-            catalog=catalog,
-            functions={QUERY_FUNCTION_ID: query_registration},
-            loader=LocalFunctionLoader(
-                {QUERY_FUNCTION_ID: query_registration}
-            ),
-        )
-        mcp = MCPServer("eDocs demo resource")
-
-        @mcp.tool()
-        def identity(edoc_id: str, ctx: Context) -> str:
-            return resource.identity(
-                ctx.request_context.request.scope["aauth"],
-                edoc_id,
+        resource_apps = [
+            self._provider_application(
+                deployment,
+                resolver=resolver,
+                function_registry=self.function_registry,
             )
-
-        @mcp.tool()
-        def query_table(
-            edoc_id: str,
-            statement: str,
-            parameters: list[Any],
-            ctx: Context,
-        ) -> dict[str, Any]:
-            return resource.execute(
-                ctx.request_context.request.scope["aauth"],
-                edoc_id=edoc_id,
-                function_id=QUERY_FUNCTION_ID,
-                function_args={
-                    "statement": statement,
-                    "parameters": parameters,
-                },
-            )
-
-        mcp_app = mcp.streamable_http_app(
-            host=f"127.0.0.1:{urls.resource.rsplit(':', 1)[-1]}",
-            authentication_middleware_factory=aauth_authorization(
-                key_resolver=resolver,
-                issuer=urls.sentinel,
-                audience=urls.resource,
-            ),
-        )
-        challenged = ResourceApplication(
-            resource,
-            mcp_app,
-            key_resolver=resolver,
-        )
-        ports = [
-            int(url.rsplit(":", 1)[-1])
-            for url in (
-                urls.ap,
-                urls.ps,
-                urls.sentinel,
-                urls.controller_a,
-                urls.controller_b,
-            )
+            for deployment in deployments
         ]
+        control_panel = create_control_panel(
+            {
+                deployment.provider_id: DemoProviderAdmin(
+                    provider_id=deployment.provider_id,
+                    display_name=deployment.display_name,
+                    catalog=deployment.catalog,
+                    policy=self.policies[deployment.provider_id],
+                    add_document=self._document_adder(deployment),
+                    source_agent=deployment.source_agent,
+                    destination_agent=DESTINATION_AGENT,
+                )
+                for deployment in deployments
+            },
+            sentinel=self.registry,
+            function_registry=self.function_registry,
+            register_function=self._function_registrar(),
+            agents=DEMO_AGENTS,
+        )
         self.services = [
-            FlaskService(ap, ports[0]),
-            FlaskService(ps, ports[1]),
-            FlaskService(sentinel, ports[2]),
-            FlaskService(controller_a, ports[3]),
-            FlaskService(controller_b, ports[4]),
-            ASGIService(challenged, int(urls.resource.rsplit(":", 1)[-1])),
+            FlaskService(ap, _port(urls.ap)),
+            FlaskService(ps, _port(urls.ps)),
+            FlaskService(sentinel, _port(urls.sentinel)),
+            *[
+                FlaskService(access_server, _port(deployment.access_server_url))
+                for access_server, deployment in zip(
+                    access_servers,
+                    deployments,
+                    strict=True,
+                )
+            ],
+            *[
+                ASGIService(resource_app, _port(deployment.resource_url))
+                for resource_app, deployment in zip(
+                    resource_apps,
+                    deployments,
+                    strict=True,
+                )
+            ],
+            FlaskService(control_panel, _port(urls.control)),
         ]
-        self._write_state(keys["agent"], agent_token)
+        self._write_state(
+            {
+                role: keys[f"{role}-agent"]
+                for role in DEMO_AGENTS
+            },
+            agent_tokens,
+            deployments,
+        )
 
-    def _write_state(self, agent_key: SigningKey, agent_token: str) -> None:
+    def _deployment(
+        self,
+        *,
+        provider_id: str,
+        display_name: str,
+        description: str,
+        resource_url: str,
+        access_server_url: str,
+        source_agent: str,
+        resource_key: SigningKey,
+        access_server_key: SigningKey,
+    ) -> ProviderDeployment:
+        state_dir = self.state_dir / provider_id
+        documents = (
+            load_demo_catalog(state_dir)
+            if (state_dir / "catalog.json").exists()
+            else setup_demo_database(state_dir, provider_id=provider_id)
+        )
+        catalog = ProviderCatalog(
+            tuple(
+                ProviderCatalogEntry(
+                    edoc_id=document.edoc_id,
+                    resource_uri=document.resource_uri,
+                    title=document.title,
+                    description=document.description,
+                    enabled=True,
+                    storage=document,
+                )
+                for document in documents.values()
+            )
+        )
+        return ProviderDeployment(
+            provider_id=provider_id,
+            display_name=display_name,
+            description=description,
+            resource_url=resource_url,
+            access_server_url=access_server_url,
+            source_agent=source_agent,
+            resource_key=resource_key,
+            access_server_key=access_server_key,
+            catalog=catalog,
+        )
+
+    def _provider_application(
+        self,
+        deployment: ProviderDeployment,
+        *,
+        resolver: KeyResolver,
+        function_registry: MutableFunctionRegistry,
+    ) -> ProviderApplication:
+        def register_tools(
+            mcp: MCPServer,
+            resource: ProviderResource,
+        ) -> None:
+            @mcp.tool()
+            def query_table(
+                provider_id: str,
+                edoc_id: str,
+                statement: str,
+                parameters: list[Any],
+                ctx: Context,
+            ) -> dict[str, Any]:
+                return resource.execute(
+                    ctx.request_context.request.scope["aauth"],
+                    provider_id=provider_id,
+                    edoc_id=edoc_id,
+                    function_id=QUERY_FUNCTION_ID,
+                    function_args={
+                        "statement": statement,
+                        "parameters": parameters,
+                    },
+                )
+
+            @mcp.tool()
+            def execute_registered_function(
+                provider_id: str,
+                edoc_id: str,
+                function_id: str,
+                arguments: dict[str, Any],
+                ctx: Context,
+            ) -> dict[str, Any]:
+                return resource.execute(
+                    ctx.request_context.request.scope["aauth"],
+                    provider_id=provider_id,
+                    edoc_id=edoc_id,
+                    function_id=function_id,
+                    function_args=arguments,
+                )
+
+            @mcp.tool()
+            def department_counts(
+                provider_id: str,
+                edoc_id: str,
+                ctx: Context,
+            ) -> dict[str, Any]:
+                return resource.execute(
+                    ctx.request_context.request.scope["aauth"],
+                    provider_id=provider_id,
+                    edoc_id=edoc_id,
+                    function_id="department_counts@1",
+                    function_args={},
+                )
+
+            @mcp.tool()
+            def average_salary_by_department(
+                provider_id: str,
+                edoc_id: str,
+                ctx: Context,
+            ) -> dict[str, Any]:
+                return resource.execute(
+                    ctx.request_context.request.scope["aauth"],
+                    provider_id=provider_id,
+                    edoc_id=edoc_id,
+                    function_id="average_salary_by_department@1",
+                    function_args={},
+                )
+
+            @mcp.tool()
+            def employee_count(
+                provider_id: str,
+                edoc_id: str,
+                ctx: Context,
+            ) -> dict[str, Any]:
+                return resource.execute(
+                    ctx.request_context.request.scope["aauth"],
+                    provider_id=provider_id,
+                    edoc_id=edoc_id,
+                    function_id="employee_count@1",
+                    function_args={},
+                )
+
+        return build_provider_server(
+            ProviderServerConfig(
+                provider_id=deployment.provider_id,
+                display_name=deployment.display_name,
+                resource_issuer=deployment.resource_url,
+                sentinel_url=self.urls.sentinel,
+                source_agent=deployment.source_agent,
+                destination_agent=DESTINATION_AGENT,
+                signing_key=deployment.resource_key,
+                authoritative_controllers=(deployment.access_server_url,),
+            ),
+            catalog=deployment.catalog,
+            functions=function_registry,
+            loader=function_registry,
+            key_resolver=resolver,
+            register_tools=register_tools,
+            on_materialized=self._record_materialization,
+        )
+
+    def _record_materialization(
+        self,
+        producer: Dataflow,
+        output: dict[str, Any],
+        controllers: tuple[str, ...],
+    ) -> None:
+        assert self.registry is not None
+        register_materialization(
+            self.registry,
+            producer=producer,
+            output=output,
+            controllers=controllers,
+        )
+
+    def _function_registrar(self):
+        def register(body: dict[str, Any]) -> LoadedFunction:
+            if set(body) != {
+                "function_id",
+                "description",
+                "input_schema",
+                "implementation",
+            }:
+                raise ValueError(
+                    "function requires function_id, description, "
+                    "input_schema, and implementation"
+                )
+            implementation = body["implementation"]
+            if (
+                not isinstance(implementation, dict)
+                or set(implementation) != {"runtime", "source"}
+                or implementation["runtime"] != "sql"
+            ):
+                raise ValueError(
+                    "the demo supports implementation runtime 'sql'"
+                )
+            registration = sql_function_registration(
+                function_id=body["function_id"],
+                description=body["description"],
+                sql=implementation["source"],
+                input_schema=body["input_schema"],
+            )
+            self.function_registry.register(
+                registration,
+                artifact=implementation,
+            )
+            assert self.registry is not None
+            self.registry.functions[
+                registration.descriptor.id
+            ] = registration.descriptor
+            return registration
+
+        return register
+
+    def _document_adder(
+        self,
+        deployment: ProviderDeployment,
+    ):
+        def add_document(body: dict[str, Any]) -> ProviderCatalogEntry:
+            if set(body) != {"title", "description", "csv"}:
+                raise ValueError(
+                    "file requires title, description, and csv fields"
+                )
+            title = body["title"]
+            description = body["description"]
+            csv_text = body["csv"]
+            if not isinstance(title, str) or not title.strip():
+                raise ValueError("title must be a non-empty string")
+            if not isinstance(description, str):
+                raise ValueError("description must be a string")
+            if not isinstance(csv_text, str) or not csv_text.strip():
+                raise ValueError("csv must be a non-empty string")
+            reader = csv.reader(io.StringIO(csv_text))
+            try:
+                header = next(reader)
+            except StopIteration as error:
+                raise ValueError("CSV must contain a header") from error
+            if not header or any(not column.strip() for column in header):
+                raise ValueError("CSV header names must be non-empty")
+            if len(set(header)) != len(header):
+                raise ValueError("CSV header names must be unique")
+            if not any(True for _ in reader):
+                raise ValueError("CSV must contain at least one data row")
+
+            edoc_id = f"doc_{uuid4().hex}"
+            resources_dir = self.state_dir / deployment.provider_id / "resources"
+            resources_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            csv_path = resources_dir / f"{edoc_id}.csv"
+            database_path = resources_dir / f"{edoc_id}.duckdb"
+            csv_path.write_text(csv_text)
+            connection = duckdb.connect(str(database_path))
+            try:
+                connection.execute(
+                    "CREATE TABLE document AS SELECT * FROM read_csv_auto(?)",
+                    [str(csv_path)],
+                )
+            except Exception:
+                database_path.unlink(missing_ok=True)
+                raise
+            finally:
+                connection.close()
+            storage = DemoCatalogEntry(
+                edoc_id=edoc_id,
+                resource_uri=f"edoc://{deployment.provider_id}/{edoc_id}",
+                title=title.strip(),
+                description=description,
+                original_filename=f"{edoc_id}.csv",
+                database_path=str(database_path),
+            )
+            return deployment.catalog.add(
+                ProviderCatalogEntry(
+                    edoc_id=storage.edoc_id,
+                    resource_uri=storage.resource_uri,
+                    title=storage.title,
+                    description=storage.description,
+                    enabled=True,
+                    storage=storage,
+                )
+            )
+
+        return add_document
+
+    def _write_state(
+        self,
+        agent_keys: dict[str, SigningKey],
+        agent_tokens: dict[str, str],
+        deployments: tuple[ProviderDeployment, ...],
+    ) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.state_dir, 0o700)
-        key_path = self.state_dir / "agent.jwk"
-        token_path = self.state_dir / "agent.token"
-        env_path = self.state_dir / "demo.env"
-        key_path.write_text(json.dumps(agent_key.private_jwk()))
-        token_path.write_text(agent_token)
-        env_path.write_text(
-            f"EDOCS_MCP_URL={self.urls.mcp}\n"
-            f"EDOCS_AGENT_KEY_FILE={key_path}\n"
-            f"EDOCS_AGENT_TOKEN_FILE={token_path}\n"
-            f"EDOCS_PERSON={PERSON}\n"
+        agents_dir = self.state_dir / "agents"
+        agents_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        provider_path = self.state_dir / "providers.json"
+        provider_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "provider_id": deployment.provider_id,
+                        "display_name": deployment.display_name,
+                        "description": deployment.description,
+                        "mcp_url": deployment.mcp_url,
+                    }
+                    for deployment in deployments
+                ],
+                indent=2,
+            )
         )
-        for path in (key_path, token_path, env_path):
+        agent_paths: list[Path] = []
+        for role, agent_id in DEMO_AGENTS.items():
+            key_path = agents_dir / f"{role}.jwk"
+            token_path = agents_dir / f"{role}.token"
+            env_path = agents_dir / f"{role}.env"
+            key_path.write_text(
+                json.dumps(agent_keys[role].private_jwk())
+            )
+            token_path.write_text(agent_tokens[role])
+            env_path.write_text(
+                f"EDOCS_PROVIDER_FILE={provider_path}\n"
+                f"EDOCS_AGENT_KEY_FILE={key_path}\n"
+                f"EDOCS_AGENT_TOKEN_FILE={token_path}\n"
+                f"EDOCS_PERSON={PERSON}\n"
+                f"EDOCS_DEMO_AGENT_ID={agent_id}\n"
+                f"EDOCS_DEMO_AGENT_ROLE={role}\n"
+                f"EDOCS_DEMO_CONTROL_URL={self.urls.control}/demo\n"
+                "EDOCS_FUNCTION_REGISTRY_URL="
+                f"{self.urls.control}/api/sentinel/functions\n"
+            )
+            agent_paths.extend((key_path, token_path, env_path))
+
+        producer_key = self.state_dir / "agent.jwk"
+        producer_token = self.state_dir / "agent.token"
+        legacy_env = self.state_dir / "demo.env"
+        producer_key.write_text(
+            json.dumps(agent_keys["producer"].private_jwk())
+        )
+        producer_token.write_text(agent_tokens["producer"])
+        legacy_env.write_text(
+            (agents_dir / "producer.env").read_text()
+            .replace(str(agents_dir / "producer.jwk"), str(producer_key))
+            .replace(
+                str(agents_dir / "producer.token"),
+                str(producer_token),
+            )
+        )
+        for path in (
+            producer_key,
+            producer_token,
+            provider_path,
+            legacy_env,
+            *agent_paths,
+        ):
             os.chmod(path, 0o600)
 
     def start(self) -> None:
@@ -635,8 +799,13 @@ class DemoStack:
             f"{self.urls.ap}/.well-known/aauth-agent.json",
             f"{self.urls.ps}/.well-known/aauth-person.json",
             f"{self.urls.sentinel}/.well-known/aauth-access.json",
-            f"{self.urls.controller_a}/.well-known/aauth-access.json",
-            f"{self.urls.controller_b}/.well-known/aauth-access.json",
+            f"{self.urls.alice_as}/.well-known/aauth-access.json",
+            f"{self.urls.bob_as}/.well-known/aauth-access.json",
+            f"{self.urls.carol_as}/.well-known/aauth-access.json",
+            f"{self.urls.alice_resource}/admin/documents",
+            f"{self.urls.bob_resource}/admin/documents",
+            f"{self.urls.carol_resource}/admin/documents",
+            f"{self.urls.control}/api/providers",
         ]
         deadline = time.monotonic() + timeout
         pending = set(urls)
@@ -686,6 +855,10 @@ def _static_and_remote_resolver(keys: dict[str, dict]) -> KeyResolver:
     return resolve
 
 
+def _port(url: str) -> int:
+    return int(url.rsplit(":", 1)[-1])
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -703,7 +876,12 @@ def main() -> None:
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)
     stack.start()
-    print(f"eDocs demo ready: {stack.urls.mcp}", flush=True)
+    print(
+        "eDocs demo ready: "
+        f"Alice {stack.urls.alice_mcp}, Bob {stack.urls.bob_mcp}; "
+        f"controls {stack.urls.control}/demo",
+        flush=True,
+    )
     try:
         stopped.wait()
     finally:

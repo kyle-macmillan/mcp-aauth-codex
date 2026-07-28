@@ -13,6 +13,7 @@ dependencies = [
     "httpx2>=2.5.0",
     "mcp",
     "mcp-aauth",
+    "mcp-edocs-provider",
     "pydantic>=2",
     "requests>=2",
 ]
@@ -29,8 +30,9 @@ packages = ["src/mcp_aauth_codex"]
 [tool.uv.sources]
 aauth-edocs = { path = "../aauth", editable = true }
 mcp-aauth = { path = "../mcp-aauth", editable = true }
-mcp = { path = "../python-sdk", editable = true }
-mcp-types = { path = "../python-sdk/src/mcp-types", editable = true }
+mcp-edocs-provider = { path = "../mcp-edocs-provider", editable = true }
+mcp = { path = "../mcp-python-sdk", editable = true }
+mcp-types = { path = "../mcp-python-sdk/src/mcp-types", editable = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

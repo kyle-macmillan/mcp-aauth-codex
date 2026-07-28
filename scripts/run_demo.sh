@@ -3,7 +3,7 @@ set -euo pipefail
 
 plugin_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 state_dir="${plugin_dir}/.demo-state"
-launcher="${plugin_dir}/scripts/run_proxy.sh"
+agent_launcher="${plugin_dir}/scripts/run_agent.sh"
 workspace_python="${plugin_dir}/.venv/bin/python"
 python_bin="${PYTHON:-${workspace_python}}"
 
@@ -37,17 +37,8 @@ if [[ ! -f "${state_dir}/ready" ]]; then
   exit 1
 fi
 
-set -a
-source "${state_dir}/demo.env"
-set +a
-
-echo "Demo ready. In Codex, ask to query edoc://demo/doc_01JDEMO7F3A."
-echo "Proxy launcher: ${launcher}"
-"${CODEX_BIN:-codex}" \
-  -c 'approval_policy={granular={sandbox_approval=true,rules=true,mcp_elicitations=true,request_permissions=true,skill_approval=true}}' \
-  -c "mcp_servers.edocs-aauth.command=\"${launcher}\"" \
-  -c "mcp_servers.edocs-aauth.env.EDOCS_MCP_URL=\"${EDOCS_MCP_URL}\"" \
-  -c "mcp_servers.edocs-aauth.env.EDOCS_AGENT_KEY_FILE=\"${EDOCS_AGENT_KEY_FILE}\"" \
-  -c "mcp_servers.edocs-aauth.env.EDOCS_AGENT_TOKEN_FILE=\"${EDOCS_AGENT_TOKEN_FILE}\"" \
-  -c "mcp_servers.edocs-aauth.env.EDOCS_PERSON=\"${EDOCS_PERSON}\"" \
+echo "Demo ready. Ask Codex to list providers, then inspect Alice, Bob, or Carol."
+"${agent_launcher}" \
+  "${state_dir}/agents/producer.env" \
+  "Producer" \
   "$@"
