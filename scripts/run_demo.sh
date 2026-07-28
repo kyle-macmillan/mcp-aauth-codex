@@ -4,15 +4,16 @@ set -euo pipefail
 plugin_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 state_dir="${plugin_dir}/.demo-state"
 launcher="${plugin_dir}/scripts/run_proxy.sh"
-workspace_python="${plugin_dir}/../mcp-aauth/.venv/bin/python"
+workspace_python="${plugin_dir}/.venv/bin/python"
 python_bin="${PYTHON:-${workspace_python}}"
 
 if [[ ! -x "${python_bin}" ]]; then
-  echo "Python environment not found: ${python_bin}" >&2
+  echo "Python environment not found: ${python_bin}; run 'uv sync --frozen'." >&2
   exit 1
 fi
 
 export PYTHONPATH="${plugin_dir}/src${PYTHONPATH:+:${PYTHONPATH}}"
+"${python_bin}" "${plugin_dir}/scripts/setup_demo_db.py" --state-dir "${state_dir}"
 "${python_bin}" -m mcp_aauth_codex.demo --state-dir "${state_dir}" &
 demo_pid=$!
 
@@ -40,7 +41,7 @@ set -a
 source "${state_dir}/demo.env"
 set +a
 
-echo "Demo ready. In Codex, ask: Use identity@1 on eDoc doc-123."
+echo "Demo ready. In Codex, ask to query edoc://demo/doc_01JDEMO7F3A."
 echo "Proxy launcher: ${launcher}"
 "${CODEX_BIN:-codex}" \
   -c 'approval_policy={granular={sandbox_approval=true,rules=true,mcp_elicitations=true,request_permissions=true,skill_approval=true}}' \

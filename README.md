@@ -10,7 +10,8 @@ Set these variables before starting Codex:
 - `EDOCS_AGENT_TOKEN_FILE`: path to the agent token
 - `EDOCS_AGENT_KEY_FILE`: path to the agent's private JWK
 - `EDOCS_PERSON`: prototype Person Server login identity used by the demo
-The plugin provides `invoke_edocs_function(edoc_id, function_id)`. A remote
+The plugin provides
+`invoke_edocs_function(resource_uri, function_id, arguments)`. A remote
 AAuth resource challenge is exchanged at the Person Server. If consent is
 required, the proxy asks Codex to display an MCP elicitation containing only
 the PS-verified eDocs claims. A grant is submitted to the PS, the proxy polls
@@ -20,9 +21,11 @@ for the final resource-scoped token, and the original MCP request is retried.
 authentication should provide an already-authenticated PS session and should
 not pass credentials through an MCP elicitation.
 
-The included launcher reuses the adjacent `mcp-aauth` development environment
-for this workspace. Outside this checkout, install the project dependencies in
-the Python environment selected by `PYTHON`.
+Install the locked local development environment with `uv sync --frozen`.
+The demo launcher uses this project's `.venv`, including DuckDB and the
+editable adjacent dependencies. The lightweight stdio proxy launcher reuses
+the adjacent `mcp-aauth` environment, which already contains the local MCP SDK
+fork.
 
 ## Live Codex demo
 
@@ -41,16 +44,24 @@ also enables the `mcp_elicitations` approval category for that run so Codex can
 display the eDocs consent form. It does not modify your user-level Codex
 configuration.
 
+The demo setup script resets a resource-owned DuckDB database, assigns its
+seeded document the opaque URI `edoc://demo/doc_01JDEMO7F3A`, and exposes
+`query_table@1`. Filenames remain catalog metadata and are not authorization
+identities.
+
 In Codex, ask:
 
 ```text
-Use identity@1 on eDoc doc-123.
+Use query_table@1 on edoc://demo/doc_01JDEMO7F3A with:
+{"statement":"SELECT name, department FROM document WHERE department = ? ORDER BY name","parameters":["engineering"]}
 ```
 
-Codex calls the local stdio proxy. The remote eDocs server issues an AAuth
-resource challenge, and the proxy displays an MCP elicitation containing the
-Person Server-verified function, eDoc, agents, resource, Sentinel, and
-controllers. Approving it completes the exchange and returns `hello`.
+Codex calls the local stdio proxy. The proxy obtains an agent-signed proactive
+resource token, and displays an MCP elicitation containing the Person
+Server-verified function, opaque eDoc, exact arguments, agents, resource,
+Sentinel, and controllers. After approval and Sentinel authorization, the
+resource verifies the invocation digest and executes it against its own
+DuckDB instance.
 
 The launcher stops the localhost services when Codex exits. The
 `EDOCS_PERSON=alice` login and generated `.demo-state/` credentials are

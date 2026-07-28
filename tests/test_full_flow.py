@@ -93,10 +93,11 @@ async def test_proxy_completes_full_aauth_flow_after_codex_elicitation():
         ) as client:
             result = await client.call_tool(
                 "invoke_edocs_function",
-                {
-                    "edoc_id": support.EDOC_ID,
-                    "function_id": support.FUNCTION,
-                },
+                    {
+                        "resource_uri": f"edoc://demo/{support.EDOC_ID}",
+                        "function_id": support.FUNCTION,
+                        "arguments": {},
+                    },
             )
 
     assert result.is_error is False

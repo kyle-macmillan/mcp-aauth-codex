@@ -9,12 +9,12 @@ from mcp_types import ElicitResult
 from mcp_aauth_codex.config import ProxyConfig
 from mcp_aauth_codex.demo import (
     DESTINATION_AGENT,
-    EDOC_ID,
-    FUNCTION_ID,
+    QUERY_FUNCTION_ID,
     DemoStack,
     DemoUrls,
 )
 from mcp_aauth_codex.proxy import build_server
+from mcp_aauth_codex.demo_database import DEMO_RESOURCE_URI
 
 
 def _free_url() -> str:
@@ -59,13 +59,43 @@ async def test_live_demo_stack_runs_complete_flow(monkeypatch, tmp_path):
         ) as client:
             result = await client.call_tool(
                 "invoke_edocs_function",
-                {"edoc_id": EDOC_ID, "function_id": FUNCTION_ID},
+                {
+                    "resource_uri": DEMO_RESOURCE_URI,
+                    "function_id": QUERY_FUNCTION_ID,
+                    "arguments": {
+                        "statement": (
+                            "SELECT name, department FROM document "
+                            "WHERE department = ? ORDER BY name"
+                        ),
+                        "parameters": ["engineering"],
+                    },
+                },
+            )
+            denied = await client.call_tool(
+                "invoke_edocs_function",
+                {
+                    "resource_uri": DEMO_RESOURCE_URI,
+                    "function_id": QUERY_FUNCTION_ID,
+                    "arguments": {
+                        "statement": (
+                            "SELECT name, department FROM document "
+                            "WHERE department = ? ORDER BY name"
+                        ),
+                        "parameters": ["finance"],
+                    },
+                },
             )
 
         assert result.is_error is False
         payload = json.loads(result.content[0].text)
-        assert payload["content"][0]["text"] == "hello"
-        assert len(prompts) == 1
+        assert payload["structured_content"]["rows"] == [
+            {"name": "Avery", "department": "engineering"},
+            {"name": "Casey", "department": "engineering"},
+        ]
+        assert len(prompts) == 2
+        assert '"engineering"' in prompts[0].message
+        assert '"finance"' in prompts[1].message
+        assert denied.is_error is True
         assert DESTINATION_AGENT in prompts[0].message
         assert stack.registry is not None
         assert len(stack.registry.materialized) == 1

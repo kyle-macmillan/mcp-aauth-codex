@@ -29,6 +29,7 @@ from aauth_edocs import (
     build_metadata,
     build_requirement,
     create_sentinel,
+    hash_function_args,
     issue_agent_token,
     issue_resource_token,
     peek_jwt,
@@ -47,8 +48,17 @@ from mcp_aauth import aauth_agent_authentication, aauth_authorization
 from starlette.types import ASGIApp, Receive, Scope, Send
 from werkzeug.serving import BaseWSGIServer, make_server
 
+from .demo_database import (
+    DEMO_EDOC_ID,
+    CatalogEntry,
+    load_demo_catalog,
+    setup_demo_database,
+)
+from .functions import LoadedFunction, LocalFunctionLoader, local_query_table_registration
+
 FUNCTION_ID = "identity@1"
 EDOC_ID = "doc-123"
+QUERY_FUNCTION_ID = "query_table@1"
 PERSON = "alice"
 SOURCE_AGENT = "aauth:source@demo.local"
 DESTINATION_AGENT = "aauth:codex@demo.local"
@@ -77,6 +87,9 @@ class DemoResource:
     key: SigningKey
     controllers: tuple[str, ...]
     documents: dict[str, Any]
+    catalog: dict[str, CatalogEntry]
+    functions: dict[str, LoadedFunction]
+    loader: LocalFunctionLoader
 
     def challenge(self, verified_agent: VerifiedRequest) -> str:
         agent = verified_agent.claims.get("sub")
@@ -117,9 +130,72 @@ class DemoResource:
         except KeyError as error:
             raise AAuthError(DENIED, 403, "eDoc does not exist") from error
 
+    def authorize(
+        self,
+        verified_agent: VerifiedRequest,
+        *,
+        edoc_id: str,
+        function_id: str,
+        function_args: dict[str, Any],
+    ) -> str:
+        identity_request = function_id == FUNCTION_ID and edoc_id in self.documents
+        deployed_request = (
+            function_id in self.functions and edoc_id in self.catalog
+        )
+        if not identity_request and not deployed_request:
+            raise AAuthError(DENIED, 403, "function is not deployed at this resource")
+        agent = verified_agent.claims.get("sub")
+        agent_jwk = (verified_agent.claims.get("cnf") or {}).get("jwk")
+        if not isinstance(agent, str) or not isinstance(agent_jwk, dict):
+            raise AAuthError(INVALID_TOKEN, 401, "agent identity is incomplete")
+        return issue_resource_token(
+            issuer=self.issuer,
+            aud=self.sentinel,
+            agent=agent,
+            agent_jkt=jwk_thumbprint(agent_jwk),
+            scope=function_id,
+            source_agent=self.source_agent,
+            edoc_id=edoc_id,
+            controllers=self.controllers,
+            function_args=function_args,
+            key=self.key,
+        )
 
-class ChallengeApplication:
-    """Issue a resource challenge before forwarding to authorized MCP."""
+    def execute(
+        self,
+        authorization: VerifiedRequest,
+        *,
+        edoc_id: str,
+        function_id: str,
+        function_args: dict[str, Any],
+    ) -> dict[str, Any]:
+        expected = {
+            "iss": self.sentinel,
+            "aud": self.issuer,
+            "source_agent": self.source_agent,
+            "scope": function_id,
+            "edoc_id": edoc_id,
+            "agent": self.destination_agent,
+            "controllers": list(self.controllers),
+            "function_args_hash": hash_function_args(function_args),
+        }
+        for name, value in expected.items():
+            if authorization.claims.get(name) != value:
+                raise AAuthError(
+                    INVALID_TOKEN,
+                    401,
+                    f"authorization {name} does not match the invocation",
+                )
+        document = self.catalog.get(edoc_id)
+        registration = self.functions.get(function_id)
+        if document is None or registration is None:
+            raise AAuthError(DENIED, 403, "eDoc or function is unavailable")
+        implementation = self.loader.load(registration.descriptor)
+        return implementation(document, function_args)
+
+
+class ResourceApplication:
+    """Serve resource metadata, proactive authorization, and authorized MCP."""
 
     def __init__(
         self,
@@ -133,6 +209,9 @@ class ChallengeApplication:
         self.challenge_app = aauth_agent_authentication(
             key_resolver=key_resolver
         )(self._challenge)
+        self.authorize_app = aauth_agent_authentication(
+            key_resolver=key_resolver
+        )(self._authorize)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http" and scope.get("path") in {
@@ -153,12 +232,60 @@ class ChallengeApplication:
             return
         if (
             scope["type"] == "http"
+            and scope.get("path") == "/authorize"
+        ):
+            await self.authorize_app(scope, receive, send)
+            return
+        if (
+            scope["type"] == "http"
             and scope.get("path") == "/mcp"
             and _presented_token_type(scope) == AGENT_TYP
         ):
             await self.challenge_app(scope, receive, send)
             return
         await self.downstream(scope, receive, send)
+
+    async def _authorize(
+        self,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+    ) -> None:
+        if scope.get("method") != "POST":
+            await _send_json(send, 405, {"error": "method_not_allowed"})
+            return
+        try:
+            body = await _read_json(receive)
+            if set(body) != {"edoc_id", "function_id", "function_args"}:
+                raise AAuthError(
+                    "invalid_request",
+                    400,
+                    "authorization request has the wrong fields",
+                )
+            function_args = body["function_args"]
+            if not isinstance(function_args, dict):
+                raise AAuthError(
+                    "invalid_request",
+                    400,
+                    "function_args must be a JSON object",
+                )
+            token = self.resource.authorize(
+                scope["aauth"],
+                edoc_id=body["edoc_id"],
+                function_id=body["function_id"],
+                function_args=function_args,
+            )
+        except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
+            await _send_json(
+                send,
+                400,
+                {"error": "invalid_request", "detail": "JSON object required"},
+            )
+            return
+        except AAuthError as error:
+            await _send_json(send, error.status, error.body())
+            return
+        await _send_json(send, 200, {"resource_token": token})
 
     async def _challenge(
         self,
@@ -201,6 +328,19 @@ async def _send_json(send: Send, status: int, value: dict) -> None:
         }
     )
     await send({"type": "http.response.body", "body": body})
+
+
+async def _read_json(receive: Receive) -> dict[str, Any]:
+    chunks = []
+    while True:
+        message = await receive()
+        chunks.append(message.get("body", b""))
+        if not message.get("more_body"):
+            break
+    value = json.loads(b"".join(chunks).decode("utf-8"))
+    if not isinstance(value, dict):
+        raise TypeError("JSON object required")
+    return value
 
 
 def _presented_token_type(scope: Scope) -> str | None:
@@ -285,17 +425,37 @@ class DemoStack:
                 "agent",
             )
         }
-        descriptor = FunctionDescriptor(
+        identity_descriptor = FunctionDescriptor(
             id=FUNCTION_ID,
             description="Return the eDoc unchanged",
             implementation_uri="memory://identity",
             digest="sha256:identity",
         )
-        proposal = Dataflow(
+        query_registration = local_query_table_registration()
+        catalog = (
+            load_demo_catalog(self.state_dir)
+            if (self.state_dir / "catalog.json").exists()
+            else setup_demo_database(self.state_dir)
+        )
+        identity_proposal = Dataflow(
             SOURCE_AGENT,
             FUNCTION_ID,
             EDOC_ID,
             DESTINATION_AGENT,
+        )
+        query_arguments = {
+            "statement": (
+                "SELECT name, department FROM document "
+                "WHERE department = ? ORDER BY name"
+            ),
+            "parameters": ["engineering"],
+        }
+        query_proposal = Dataflow.from_arguments(
+            SOURCE_AGENT,
+            QUERY_FUNCTION_ID,
+            DEMO_EDOC_ID,
+            DESTINATION_AGENT,
+            query_arguments,
         )
         self.registry = SentinelRegistry(
             resource_bindings={
@@ -309,12 +469,21 @@ class DemoStack:
                 (urls.resource, EDOC_ID): (
                     urls.controller_a,
                     urls.controller_b,
-                )
+                ),
+                (urls.resource, DEMO_EDOC_ID): (
+                    urls.controller_a,
+                    urls.controller_b,
+                ),
             },
-            functions={FUNCTION_ID: descriptor},
+            functions={
+                FUNCTION_ID: identity_descriptor,
+                QUERY_FUNCTION_ID: query_registration.descriptor,
+            },
         )
         transport = RequestsTransport()
-        controller_policy = ControllerPolicy((ExactRule(proposal),))
+        controller_policy = ControllerPolicy(
+            (ExactRule(identity_proposal), ExactRule(query_proposal))
+        )
         ap = _metadata_app(urls.ap, "aauth-agent.json", keys["ap"])
         controller_a = create_as(
             urls.controller_a,
@@ -366,6 +535,11 @@ class DemoStack:
             key=keys["resource"],
             controllers=(urls.controller_a, urls.controller_b),
             documents={EDOC_ID: {"message": "hello"}},
+            catalog=catalog,
+            functions={QUERY_FUNCTION_ID: query_registration},
+            loader=LocalFunctionLoader(
+                {QUERY_FUNCTION_ID: query_registration}
+            ),
         )
         mcp = MCPServer("eDocs demo resource")
 
@@ -376,6 +550,23 @@ class DemoStack:
                 edoc_id,
             )
 
+        @mcp.tool()
+        def query_table(
+            edoc_id: str,
+            statement: str,
+            parameters: list[Any],
+            ctx: Context,
+        ) -> dict[str, Any]:
+            return resource.execute(
+                ctx.request_context.request.scope["aauth"],
+                edoc_id=edoc_id,
+                function_id=QUERY_FUNCTION_ID,
+                function_args={
+                    "statement": statement,
+                    "parameters": parameters,
+                },
+            )
+
         mcp_app = mcp.streamable_http_app(
             host=f"127.0.0.1:{urls.resource.rsplit(':', 1)[-1]}",
             authentication_middleware_factory=aauth_authorization(
@@ -384,7 +575,7 @@ class DemoStack:
                 audience=urls.resource,
             ),
         )
-        challenged = ChallengeApplication(
+        challenged = ResourceApplication(
             resource,
             mcp_app,
             key_resolver=resolver,

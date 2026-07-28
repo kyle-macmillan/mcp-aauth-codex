@@ -1,12 +1,18 @@
 import pytest
 
-from aauth_edocs import EdocsApprovalRequest, SigningKey, issue_agent_token
+from aauth_edocs import (
+    EMPTY_FUNCTION_ARGS_HASH,
+    EdocsApprovalRequest,
+    SigningKey,
+    issue_agent_token,
+)
 from mcp import Client
 from mcp_aauth_codex.config import ProxyConfig
 from mcp.server.elicitation import render_elicitation_schema
 from mcp_aauth_codex.proxy import (
     ConsentDecision,
     _approval_message,
+    _resource_edoc_id,
     _remote_tool,
     build_server,
 )
@@ -42,6 +48,8 @@ def test_prompt_contains_ps_verified_edocs_facts():
         resource="https://resource.example",
         authorization_audience="https://sentinel.example",
         approval_url="https://ps.example/consent/pending",
+        function_args={},
+        function_args_hash=EMPTY_FUNCTION_ARGS_HASH,
     )
 
     message = _approval_message(review)
@@ -56,6 +64,7 @@ def test_prompt_contains_ps_verified_edocs_facts():
         review.authorization_audience,
     ):
         assert value in message
+    assert "Arguments:\n{}" in message
 
 
 @pytest.mark.asyncio
@@ -85,5 +94,16 @@ async def test_server_exposes_only_constrained_edocs_tool():
 
     assert [tool.name for tool in tools.tools] == ["invoke_edocs_function"]
     schema = tools.tools[0].input_schema
-    assert schema["required"] == ["edoc_id", "function_id"]
-    assert set(schema["properties"]) == {"edoc_id", "function_id"}
+    assert schema["required"] == ["resource_uri", "function_id", "arguments"]
+    assert set(schema["properties"]) == {
+        "resource_uri",
+        "function_id",
+        "arguments",
+    }
+
+
+def test_resource_uri_resolves_only_opaque_demo_edocs():
+    assert _resource_edoc_id("edoc://demo/doc_01JDEMO7F3A") == "doc_01JDEMO7F3A"
+    for value in ("employees.csv", "edoc://alice/doc-1", "edoc://demo/a/b"):
+        with pytest.raises(ValueError, match="resource_uri"):
+            _resource_edoc_id(value)

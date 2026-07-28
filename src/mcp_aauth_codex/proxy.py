@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import sys
 import traceback
+import json
+from typing import Any
+from urllib.parse import urlsplit
 
 import httpx2
 from aauth_edocs import (
     AAuthError,
+    ApprovalRequired,
     AuthorizationCoordinator,
     EdocsApprovalHandler,
     EdocsApprovalRequest,
@@ -45,7 +49,9 @@ def _approval_message(review: EdocsApprovalRequest) -> str:
         f"Destination agent: {review.destination_agent}\n"
         f"Resource: {review.resource}\n"
         f"Authorization service: {review.authorization_audience}\n"
-        f"Controllers: {controllers}"
+        f"Controllers: {controllers}\n"
+        "Arguments:\n"
+        f"{json.dumps(review.function_args, indent=2, sort_keys=True)}"
     )
 
 
@@ -63,6 +69,26 @@ def _remote_tool(function_id: str) -> str:
     ):
         raise ValueError("function_id must be a versioned identifier such as identity@1")
     return name
+
+
+def _resource_edoc_id(resource_uri: str) -> str:
+    parts = urlsplit(resource_uri)
+    edoc_id = parts.path.lstrip("/")
+    if (
+        parts.scheme != "edoc"
+        or parts.netloc != "demo"
+        or not edoc_id
+        or "/" in edoc_id
+        or parts.query
+        or parts.fragment
+    ):
+        raise ValueError("resource_uri must be an edoc://demo/<opaque-id> URI")
+    return edoc_id
+
+
+def _resource_origin(mcp_url: str) -> str:
+    parts = urlsplit(mcp_url)
+    return f"{parts.scheme}://{parts.netloc}"
 
 
 def _result_payload(result) -> dict:
@@ -126,8 +152,9 @@ def build_server(
         )
     )
     async def invoke_edocs_function(
-        edoc_id: str,
+        resource_uri: str,
         function_id: str,
+        arguments: dict[str, Any],
         ctx: Context,
     ) -> dict:
         async def prompt(review: EdocsApprovalRequest) -> str:
@@ -146,6 +173,42 @@ def build_server(
             consent_client=consent_client,
             prompt=prompt,
         )
+        edoc_id = _resource_edoc_id(resource_uri)
+        if "edoc_id" in arguments:
+            raise ValueError("arguments must not override the reserved edoc_id field")
+        origin = _resource_origin(config.remote_mcp_url)
+        signing_auth = AAuthAgentHTTPAuth(
+            key=config.signing_key,
+            token=config.agent_token,
+        )
+        authorize_options = {
+            "auth": signing_auth,
+            "follow_redirects": False,
+        }
+        if http_transport is not None:
+            authorize_options["transport"] = http_transport
+        async with httpx2.AsyncClient(**authorize_options) as authorize_client:
+            response = await authorize_client.post(
+                f"{origin}/authorize",
+                json={
+                    "edoc_id": edoc_id,
+                    "function_id": function_id,
+                    "function_args": arguments,
+                },
+            )
+        if response.status_code != 200:
+            raise AAuthError.from_response(response.status_code, response.json())
+        resource_token = response.json().get("resource_token")
+        if not isinstance(resource_token, str):
+            raise RuntimeError("resource returned no resource token")
+        authorization = await coordinator.begin_async(
+            resource_token,
+            resource_url=config.remote_mcp_url,
+        )
+        if isinstance(authorization, ApprovalRequired):
+            await approval_handler(authorization)
+            await coordinator.complete_async(authorization)
+
         auth = AAuthAgentHTTPAuth(
             key=config.signing_key,
             token=config.agent_token,
@@ -171,7 +234,7 @@ def build_server(
             ):
                 result = await client.call_tool(
                     _remote_tool(function_id),
-                    {"edoc_id": edoc_id},
+                    {"edoc_id": edoc_id, **arguments},
                 )
         except Exception as error:
             _raise_remote_error(error)

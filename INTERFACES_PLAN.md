@@ -5,7 +5,7 @@
 Build the next demo milestone in two gated stages:
 
 1. Extend the reusable eDocs authorization model so an authorization binds the
-   exact normalized arguments of a server-side function.
+   exact canonical JSON arguments of a server-side function.
 2. Replace the single hard-coded resource with Alice, Bob, and Carol, each
    owning a multi-file MCP catalog, an Access Server (AS), and a combined
    administration dashboard.
@@ -13,26 +13,33 @@ Build the next demo milestone in two gated stages:
 The Sentinel remains the authoritative registry and audit point. Generic
 `mcp-aauth` and the forked MCP SDK must remain free of eDocs-specific behavior.
 
-## 1. Exact-argument authorization foundation
+## 1. Exact-argument authorization foundation (complete)
 
 Complete and test this stage before starting the dashboards.
 
-- Extend `Dataflow` with a digest of RFC 8785-canonicalized function arguments.
-  The existing four-field construction remains valid and represents an empty
-  argument object.
-- Add normalized `function_arguments` to resource, controller, conditional,
-  and final authorization tokens. Every verifier must reject missing,
-  changed, or inconsistently canonicalized arguments.
+- `Dataflow` retains readable canonical arguments and derives their
+  domain-separated digest. Existing four-field construction represents `{}`.
+- Resource tokens carry the full `function_args` object and its digest.
+  Controller, conditional, and final tokens carry only the digest.
+- Person Server consent shows the full object from the verified resource token.
+- AAuth treats function arguments as opaque JSON. It does not apply function
+  schemas, defaults, SQL validation, or application semantics.
 - Include the normalized arguments in Person Server consent review and the
   trusted Codex approval prompt.
-- Extend function descriptors with their input JSON Schema so resource
-  validation, policy construction, and the dashboards share one definition.
+- Function descriptors carry input JSON Schema as descriptive metadata for
+  resources, discovery, and dashboards. The resource owns argument handling
+  and execution.
 - Generalize the controller-policy dependency to an evaluator interface.
   Existing immutable `ControllerPolicy` instances remain supported, while the
   demo can supply a policy store that changes at runtime.
 - Continue treating final-token issuance as materialization. Signed execution
   receipts remain deferred for this milestone.
-- Run the complete `aauth` and `mcp-aauth` test suites before proceeding.
+- The complete `aauth` and `mcp-aauth` suites pass with empty-argument and
+  argument-tampering coverage.
+
+The current vertical slice is `query_table@1`: a resource-owned DuckDB
+database, opaque eDoc identity, proactive authorization, exact policy, trusted
+consent, and execution only after Sentinel authorization.
 
 ## 2. Demo topology and MCP behavior
 
@@ -63,9 +70,9 @@ configuration.
 
 - Each resource server exposes an agent-signed `/authorize` endpoint accepting
   the selected eDoc, function ID, and function arguments.
-- The endpoint verifies that the eDoc is enabled, the function is compatible,
-  and the arguments satisfy the function schema. It fills defaults before
-  issuing the exact resource token.
+- The endpoint verifies that the eDoc is enabled and the function is deployed,
+  then issues a resource token for the exact opaque JSON arguments. It neither
+  executes the function nor applies defaults.
 - The Codex-facing invocation becomes
   `invoke_edocs_function(resource_uri, function_id, arguments)`.
 - The proxy obtains the resource token, runs the existing PS/Sentinel/AS
@@ -76,12 +83,16 @@ configuration.
 
 ### Initial functions
 
-`select_and_filter_table_rows@1`, for CSV and Parquet:
+`query_table@1`, for the initial DuckDB-backed CSV/Parquet vertical slice:
 
-- ordered selected columns;
-- zero or more typed filters using `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, or
-  `contains`; and
-- a row limit from 1 through 100.
+- a SQL statement;
+- a JSON array of bound parameters; and
+- resource-controlled result limits.
+
+The resource resolves the opaque eDoc ID to its own DuckDB instance and
+executes only after checking the final token's exact argument digest. AAuth
+does not parse SQL. Implementations may come from any trusted source so long
+as the resource deploys the immutable descriptor used by the AS and Sentinel.
 
 `search_pdf_text@1`, for PDF:
 
