@@ -1,5 +1,27 @@
 # Multi-provider eDocs Demo and Administration Interfaces
 
+## Current implementation handoff (2026-07-27)
+
+The exact-invocation DuckDB vertical slice is complete on `main` at
+`5f9d97b`. The demo now uses proactive, agent-signed authorization; opaque
+eDoc IDs; exact opaque JSON argument binding; resource-side final-token
+verification; and `query_table@1` execution against the resource's own
+per-eDoc DuckDB database. `scripts/setup_demo_db.py` resets and seeds the demo.
+AAuth does not validate function schemas or SQL.
+
+Related implementation commits are `aauth/55673bc` on `edocs-demo` and
+`mcp-aauth/12d909e` on `edocs-demo`; the preceding exact-binding commits are
+`aauth/4ff9f98` and `mcp-aauth/ed734ed`. The local `python-sdk` fork remains
+unchanged on `aauth-auth-middleware-hook`. Verification is 212 passed and
+1 skipped in `aauth`, 68 passed in `mcp-aauth`, and 19 passed here.
+
+The next session should start here by generalizing the working resource into
+Alice, Bob, and Carol provider/resource/AS domains. Implement provider-qualified
+catalog discovery, opaque routing, and isolation tests before dashboards.
+Reuse the existing `FunctionLoader` boundary and authorization/execution flow;
+do not add an AAuth-side query language, SQL validation, or function-schema
+enforcement. Filenames remain catalog metadata rather than identifiers.
+
 ## Summary
 
 Build the next demo milestone in two gated stages:
