@@ -46,6 +46,34 @@ def _demo_urls() -> DemoUrls:
     )
 
 
+def _payload(result):
+    return json.loads(result.content[0].text)
+
+
+def _provider_refs(result) -> dict[str, str]:
+    return {
+        provider["provider_id"]: provider["provider_ref"]
+        for provider in _payload(result)["providers"]
+    }
+
+
+def _resource_ref(result) -> str:
+    return _payload(result)["resources"][0]["resource_ref"]
+
+
+async def _discover_resource_refs(client) -> dict[str, str]:
+    providers = await client.call_tool("list_providers", {})
+    resources_by_uri = {}
+    for provider_ref in _provider_refs(providers).values():
+        resources = await client.call_tool(
+            "list_resources",
+            {"provider_ref": provider_ref},
+        )
+        for resource in _payload(resources)["resources"]:
+            resources_by_uri[resource["uri"]] = resource["resource_ref"]
+    return resources_by_uri
+
+
 @pytest.mark.asyncio
 async def test_live_demo_stack_runs_complete_flow(monkeypatch, tmp_path):
     state_dir = tmp_path / "state"
@@ -75,23 +103,27 @@ async def test_live_demo_stack_runs_complete_flow(monkeypatch, tmp_path):
             elicitation_callback=approve,
         ) as client:
             providers = await client.call_tool("list_providers", {})
+            provider_refs = _provider_refs(providers)
             resources = await client.call_tool(
                 "list_resources",
-                {"provider_id": "alice"},
+                {"provider_ref": provider_refs["alice"]},
             )
             bob_resources = await client.call_tool(
                 "list_resources",
-                {"provider_id": "bob"},
+                {"provider_ref": provider_refs["bob"]},
             )
             carol_resources = await client.call_tool(
                 "list_resources",
-                {"provider_id": "carol"},
+                {"provider_ref": provider_refs["carol"]},
             )
+            alice_ref = _resource_ref(resources)
+            bob_ref = _resource_ref(bob_resources)
+            carol_ref = _resource_ref(carol_resources)
             assert prompts == []
             result = await client.call_tool(
                 "invoke_edocs_function",
                 {
-                    "resource_uri": DEMO_RESOURCE_URI,
+                    "resource_ref": alice_ref,
                     "function_id": QUERY_FUNCTION_ID,
                     "arguments": {
                         "statement": (
@@ -105,10 +137,7 @@ async def test_live_demo_stack_runs_complete_flow(monkeypatch, tmp_path):
             bob_result = await client.call_tool(
                 "invoke_edocs_function",
                 {
-                    "resource_uri": DEMO_RESOURCE_URI.replace(
-                        "edoc://alice/",
-                        "edoc://bob/",
-                    ),
+                    "resource_ref": bob_ref,
                     "function_id": QUERY_FUNCTION_ID,
                     "arguments": {
                         "statement": (
@@ -122,10 +151,7 @@ async def test_live_demo_stack_runs_complete_flow(monkeypatch, tmp_path):
             carol_result = await client.call_tool(
                 "invoke_edocs_function",
                 {
-                    "resource_uri": DEMO_RESOURCE_URI.replace(
-                        "edoc://alice/",
-                        "edoc://carol/",
-                    ),
+                    "resource_ref": carol_ref,
                     "function_id": QUERY_FUNCTION_ID,
                     "arguments": {
                         "statement": (
@@ -139,7 +165,7 @@ async def test_live_demo_stack_runs_complete_flow(monkeypatch, tmp_path):
             denied = await client.call_tool(
                 "invoke_edocs_function",
                 {
-                    "resource_uri": DEMO_RESOURCE_URI,
+                    "resource_ref": alice_ref,
                     "function_id": QUERY_FUNCTION_ID,
                     "arguments": {
                         "statement": (
@@ -153,7 +179,7 @@ async def test_live_demo_stack_runs_complete_flow(monkeypatch, tmp_path):
             unpolicied_function = await client.call_tool(
                 "invoke_edocs_function",
                 {
-                    "resource_uri": DEMO_RESOURCE_URI,
+                    "resource_ref": alice_ref,
                     "function_id": "employee_count@1",
                     "arguments": {},
                 },
@@ -181,20 +207,20 @@ async def test_live_demo_stack_runs_complete_flow(monkeypatch, tmp_path):
             mode="legacy",
             elicitation_callback=approve,
         ) as client:
+            misrouted_providers = await client.call_tool("list_providers", {})
             misrouted = await client.call_tool(
-                "invoke_edocs_function",
+                "list_resources",
                 {
-                    "resource_uri": DEMO_RESOURCE_URI,
-                    "function_id": QUERY_FUNCTION_ID,
-                    "arguments": {
-                        "statement": "SELECT count(*) AS count FROM document",
-                        "parameters": [],
-                    },
+                    "provider_ref": _provider_refs(misrouted_providers)[
+                        "alice"
+                    ]
                 },
             )
 
         assert misrouted.is_error is True
-        assert "resource belongs to provider bob" in misrouted.content[0].text
+        assert "provider alice returned an unqualified resource URI" in (
+            misrouted.content[0].text
+        )
         assert len(prompts) == prompt_count_before_misroute
         assert set(stack.registry.materialized) == materialized_before_misroute
 
@@ -220,16 +246,16 @@ async def test_live_demo_stack_runs_complete_flow(monkeypatch, tmp_path):
         ) as client:
             disabled_alice = await client.call_tool(
                 "list_resources",
-                {"provider_id": "alice"},
+                {"provider_ref": provider_refs["alice"]},
             )
             unchanged_bob = await client.call_tool(
                 "list_resources",
-                {"provider_id": "bob"},
+                {"provider_ref": provider_refs["bob"]},
             )
             disabled_invocation = await client.call_tool(
                 "invoke_edocs_function",
                 {
-                    "resource_uri": DEMO_RESOURCE_URI,
+                    "resource_ref": alice_ref,
                     "function_id": QUERY_FUNCTION_ID,
                     "arguments": {
                         "statement": "SELECT count(*) AS count FROM document",
@@ -254,7 +280,7 @@ async def test_live_demo_stack_runs_complete_flow(monkeypatch, tmp_path):
         async with Client(proxy, mode="legacy") as client:
             restored_alice = await client.call_tool(
                 "list_resources",
-                {"provider_id": "alice"},
+                {"provider_ref": provider_refs["alice"]},
             )
         restored_payload = json.loads(restored_alice.content[0].text)
         assert restored_payload["resources"][0]["title"] == "Alice renamed data"
@@ -262,25 +288,34 @@ async def test_live_demo_stack_runs_complete_flow(monkeypatch, tmp_path):
         assert "original_filename" not in str(restored_payload)
 
         provider_payload = json.loads(providers.content[0].text)
-        assert provider_payload == {
-            "providers": [
-                {
-                    "provider_id": "alice",
-                    "display_name": "Alice",
-                    "description": "Alice's governed eDocs",
-                },
-                {
-                    "provider_id": "bob",
-                    "display_name": "Bob",
-                    "description": "Bob's governed eDocs",
-                },
-                {
-                    "provider_id": "carol",
-                    "display_name": "Carol",
-                    "description": "Carol's governed eDocs",
-                },
-            ]
-        }
+        assert [
+            {
+                key: value
+                for key, value in provider.items()
+                if key != "provider_ref"
+            }
+            for provider in provider_payload["providers"]
+        ] == [
+            {
+                "provider_id": "alice",
+                "display_name": "Alice",
+                "description": "Alice's governed eDocs",
+            },
+            {
+                "provider_id": "bob",
+                "display_name": "Bob",
+                "description": "Bob's governed eDocs",
+            },
+            {
+                "provider_id": "carol",
+                "display_name": "Carol",
+                "description": "Carol's governed eDocs",
+            },
+        ]
+        assert all(
+            provider["provider_ref"].startswith("provider_")
+            for provider in provider_payload["providers"]
+        )
         resource_payload = json.loads(resources.content[0].text)
         assert [resource["uri"] for resource in resource_payload["resources"]] == [
             DEMO_RESOURCE_URI
@@ -404,6 +439,7 @@ async def test_live_demo_stack_runs_complete_flow(monkeypatch, tmp_path):
                 name, value = line.split("=", 1)
                 role_env[name] = value
             assert role_env["EDOCS_DEMO_AGENT_ID"] == agent_id
+            assert "EDOCS_DEMO_CONTROL_URL" not in role_env
             claude_config = (
                 state_dir / "agents" / f"{role}.claude-mcp.json"
             )
@@ -483,10 +519,11 @@ async def test_live_policy_mutation_is_isolated_and_restartable(
             mode="legacy",
             elicitation_callback=approve,
         ) as client:
+            resource_refs = await _discover_resource_refs(client)
             denied_alice = await client.call_tool(
                 "invoke_edocs_function",
                 {
-                    "resource_uri": DEMO_RESOURCE_URI,
+                    "resource_ref": resource_refs[DEMO_RESOURCE_URI],
                     "function_id": QUERY_FUNCTION_ID,
                     "arguments": alice_rule.target.function_args,
                 },
@@ -494,10 +531,12 @@ async def test_live_policy_mutation_is_isolated_and_restartable(
             allowed_bob = await client.call_tool(
                 "invoke_edocs_function",
                 {
-                    "resource_uri": DEMO_RESOURCE_URI.replace(
-                        "edoc://alice/",
-                        "edoc://bob/",
-                    ),
+                    "resource_ref": resource_refs[
+                        DEMO_RESOURCE_URI.replace(
+                            "edoc://alice/",
+                            "edoc://bob/",
+                        )
+                    ],
                     "function_id": QUERY_FUNCTION_ID,
                     "arguments": stack.policies[
                         "bob"
@@ -532,10 +571,11 @@ async def test_live_policy_mutation_is_isolated_and_restartable(
             mode="legacy",
             elicitation_callback=approve,
         ) as client:
+            resource_refs = await _discover_resource_refs(client)
             restored_alice = await client.call_tool(
                 "invoke_edocs_function",
                 {
-                    "resource_uri": DEMO_RESOURCE_URI,
+                    "resource_ref": resource_refs[DEMO_RESOURCE_URI],
                     "function_id": QUERY_FUNCTION_ID,
                     "arguments": alice_rule.target.function_args,
                 },
@@ -565,6 +605,35 @@ def test_demo_control_panel_manages_isolated_provider_state(tmp_path):
         assert [
             item["provider_id"] for item in providers["providers"]
         ] == ["alice", "bob", "carol"]
+        public_functions = requests.get(
+            f"{root}/api/sentinel/functions",
+            timeout=2,
+        )
+        assert public_functions.status_code == 200
+        public_function_body = public_functions.json()
+        assert [
+            function["function_id"]
+            for function in public_function_body["functions"]
+        ] == sorted(
+            function["function_id"]
+            for function in public_function_body["functions"]
+        )
+        public_employee_count = next(
+            function
+            for function in public_function_body["functions"]
+            if function["function_id"] == "employee_count@1"
+        )
+        assert public_employee_count == {
+            "function_id": "employee_count@1",
+            "description": "Count all employees in the document",
+            "digest": public_employee_count["digest"],
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        }
+        assert "implementation" not in str(public_function_body)
         sentinel = requests.get(f"{root}/api/sentinel", timeout=2)
         assert sentinel.status_code == 200
         sentinel_body = sentinel.json()
@@ -613,6 +682,23 @@ def test_demo_control_panel_manages_isolated_provider_state(tmp_path):
         assert registered.status_code == 201
         assert registered.json()["function"]["function_id"] == "summarize@1"
         assert "summarize@1" in stack.registry.functions
+        refreshed_functions = requests.get(
+            f"{root}/api/sentinel/functions",
+            timeout=2,
+        ).json()["functions"]
+        assert "summarize@1" in {
+            function["function_id"] for function in refreshed_functions
+        }
+        assert all(
+            set(function)
+            == {
+                "function_id",
+                "description",
+                "input_schema",
+                "digest",
+            }
+            for function in refreshed_functions
+        )
         assert requests.post(
             f"{root}/api/sentinel/functions",
             json={
@@ -747,6 +833,11 @@ async def test_agent_registers_function_then_owner_policy_enables_it(
             mode="legacy",
             elicitation_callback=approve,
         ) as client:
+            resource_refs = await _discover_resource_refs(client)
+            functions_before = await client.call_tool(
+                "list_edocs_functions",
+                {},
+            )
             registered = await client.call_tool(
                 "register_edocs_function",
                 {
@@ -769,16 +860,38 @@ async def test_agent_registers_function_then_owner_policy_enables_it(
                     },
                 },
             )
+            functions_after = await client.call_tool(
+                "list_edocs_functions",
+                {},
+            )
             denied = await client.call_tool(
                 "invoke_edocs_function",
                 {
-                    "resource_uri": DEMO_RESOURCE_URI,
+                    "resource_ref": resource_refs[DEMO_RESOURCE_URI],
                     "function_id": "department_names@1",
                     "arguments": arguments,
                 },
             )
 
         assert registered.is_error is False
+        assert "department_names@1" not in {
+            function["function_id"]
+            for function in _payload(functions_before)["functions"]
+        }
+        discovered_function = next(
+            function
+            for function in _payload(functions_after)["functions"]
+            if function["function_id"] == "department_names@1"
+        )
+        assert discovered_function["input_schema"]["required"] == [
+            "department"
+        ]
+        assert set(discovered_function) == {
+            "function_id",
+            "description",
+            "input_schema",
+            "digest",
+        }
         assert "department_names@1" in stack.registry.functions
         assert denied.is_error is True
         assert all(
@@ -807,10 +920,11 @@ async def test_agent_registers_function_then_owner_policy_enables_it(
             mode="legacy",
             elicitation_callback=approve,
         ) as client:
+            resource_refs = await _discover_resource_refs(client)
             allowed = await client.call_tool(
                 "invoke_edocs_function",
                 {
-                    "resource_uri": DEMO_RESOURCE_URI,
+                    "resource_ref": resource_refs[DEMO_RESOURCE_URI],
                     "function_id": "department_names@1",
                     "arguments": arguments,
                 },

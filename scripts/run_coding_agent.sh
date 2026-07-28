@@ -14,17 +14,48 @@ shift 3
 plugin_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 launcher="${plugin_dir}/scripts/run_proxy.sh"
 
-set -a
 source "${agent_env}"
-set +a
+agent_role="${EDOCS_DEMO_AGENT_ROLE:-agent}"
+case "${agent_role}" in
+  *[!a-zA-Z0-9_-]*)
+    echo "Invalid demo agent role: ${agent_role}" >&2
+    exit 2
+    ;;
+esac
+agent_workspace="$(mktemp -d "${TMPDIR:-/tmp}/edocs-${agent_role}.XXXXXX")"
+chmod 700 "${agent_workspace}"
+cd -- "${agent_workspace}"
 
 echo "${display_name}: ${EDOCS_DEMO_AGENT_ID}"
-echo "Provider controls: ${EDOCS_DEMO_CONTROL_URL}"
 
 case "${client}" in
   codex)
-    exec "${CODEX_BIN:-codex}" \
+    exec env \
+      -u EDOCS_PROVIDER_FILE \
+      -u EDOCS_AGENT_KEY_FILE \
+      -u EDOCS_AGENT_TOKEN_FILE \
+      -u EDOCS_PERSON \
+      -u EDOCS_DEMO_AGENT_ID \
+      -u EDOCS_DEMO_AGENT_ROLE \
+      -u EDOCS_DEMO_CONTROL_URL \
+      -u EDOCS_CLAUDE_MCP_CONFIG \
+      -u EDOCS_FUNCTION_REGISTRY_URL \
+      "${CODEX_BIN:-codex}" \
+      -C "${agent_workspace}" \
+      --disable shell_tool \
+      --disable unified_exec \
+      --disable apps \
+      --disable browser_use \
+      --disable browser_use_external \
+      --disable in_app_browser \
+      --disable computer_use \
+      --disable image_generation \
+      --disable plugins \
+      --disable skill_search \
+      -c 'web_search="disabled"' \
+      -c 'agents.enabled=false' \
       -c 'approval_policy={granular={sandbox_approval=true,rules=true,mcp_elicitations=true,request_permissions=true,skill_approval=true}}' \
+      -c 'mcp_servers={}' \
       -c "mcp_servers.edocs-aauth.command=\"${launcher}\"" \
       -c "mcp_servers.edocs-aauth.env.EDOCS_PROVIDER_FILE=\"${EDOCS_PROVIDER_FILE}\"" \
       -c "mcp_servers.edocs-aauth.env.EDOCS_AGENT_KEY_FILE=\"${EDOCS_AGENT_KEY_FILE}\"" \
@@ -34,9 +65,22 @@ case "${client}" in
       "$@"
     ;;
   claude)
-    exec "${CLAUDE_BIN:-claude}" \
+    exec env \
+      -u EDOCS_PROVIDER_FILE \
+      -u EDOCS_AGENT_KEY_FILE \
+      -u EDOCS_AGENT_TOKEN_FILE \
+      -u EDOCS_PERSON \
+      -u EDOCS_DEMO_AGENT_ID \
+      -u EDOCS_DEMO_AGENT_ROLE \
+      -u EDOCS_DEMO_CONTROL_URL \
+      -u EDOCS_CLAUDE_MCP_CONFIG \
+      -u EDOCS_FUNCTION_REGISTRY_URL \
+      "${CLAUDE_BIN:-claude}" \
       --strict-mcp-config \
       --mcp-config "${EDOCS_CLAUDE_MCP_CONFIG}" \
+      --no-chrome \
+      --disable-slash-commands \
+      --disallowedTools "Bash,Read,Glob,Grep,WebFetch,WebSearch,Edit,Write,NotebookEdit,Task" \
       "$@"
     ;;
   *)

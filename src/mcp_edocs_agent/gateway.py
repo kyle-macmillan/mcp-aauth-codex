@@ -249,6 +249,60 @@ class EdocsGateway:
             raise ValueError(detail or "function registration failed")
         return body
 
+    async def list_edocs_functions(
+        self,
+    ) -> dict[str, list[dict[str, Any]]]:
+        if not self.config.function_registry_url:
+            raise RuntimeError("function registry is not configured")
+        options = {"follow_redirects": False}
+        if self.http_transport is not None:
+            options["transport"] = self.http_transport
+        try:
+            async with httpx2.AsyncClient(**options) as client:
+                response = await client.get(
+                    self.config.function_registry_url,
+                )
+        except httpx2.HTTPError as error:
+            raise RuntimeError("function registry is unavailable") from error
+        try:
+            body = response.json()
+        except ValueError as error:
+            raise RuntimeError(
+                "function registry returned an invalid response"
+            ) from error
+        if response.status_code != 200:
+            detail = (
+                body.get("detail")
+                if isinstance(body, dict)
+                else "function discovery failed"
+            )
+            raise ValueError(detail or "function discovery failed")
+        if (
+            not isinstance(body, dict)
+            or set(body) != {"functions"}
+            or not isinstance(body["functions"], list)
+        ):
+            raise RuntimeError("function registry returned an invalid response")
+        for function in body["functions"]:
+            if (
+                not isinstance(function, dict)
+                or set(function)
+                != {
+                    "function_id",
+                    "description",
+                    "input_schema",
+                    "digest",
+                }
+                or not isinstance(function["function_id"], str)
+                or not isinstance(function["description"], str)
+                or not isinstance(function["input_schema"], dict)
+                or not isinstance(function["digest"], str)
+            ):
+                raise RuntimeError(
+                    "function registry returned an invalid response"
+                )
+        return body
+
 
 def _remote_tool(function_id: str) -> str:
     name, separator, version = function_id.partition("@")

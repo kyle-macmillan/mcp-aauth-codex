@@ -61,6 +61,7 @@ if [[ ! -f "${state_dir}/ready" ]]; then
 fi
 
 echo "Demo ready for ${client}. Ask it to list providers, then inspect Alice, Bob, or Carol."
+echo "Human-only control panel: http://127.0.0.1:8721/demo"
 "${agent_launcher}" \
   "${client}" \
   "${state_dir}/agents/producer.env" \

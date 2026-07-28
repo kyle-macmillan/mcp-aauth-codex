@@ -20,14 +20,28 @@ Set these variables before starting a coding-agent host:
 - `EDOCS_PERSON`: prototype Person Server login identity used by the demo
 
 The plugin provides `list_providers()`,
-`list_resources(provider_id)`, and
-`invoke_edocs_function(resource_uri, function_id, arguments)`.
+`list_resources(provider_ref)`, and
+`list_edocs_functions()`, plus
+`invoke_edocs_function(resource_ref, function_id, arguments)`.
 Provider listing comes from the bridge's directory, while resource listing is
 forwarded live to the selected provider's MCP server without starting a
-consent flow. The selected provider ID is repeated at authorization and
-execution, so a directory entry that points Alice at Bob's endpoint is rejected
-before consent or materialization. A remote AAuth resource challenge is
-exchanged at the Person Server. If consent is
+consent flow. Provider and resource references are opaque and scoped to the
+bridge process: `provider_ref` is issued only by `list_providers`, and
+`resource_ref` is issued only by `list_resources`. The invocation tool does not
+accept an `edoc://` URI, so a URI learned or guessed outside discovery cannot
+skip the workflow. These references enforce discovery order; they do not
+replace AAuth authorization.
+
+`list_edocs_functions()` fetches the live shared registry and returns only each
+registered function's ID, description, input schema, and descriptor digest.
+It does not return implementation source, implementation locations, or
+policy-derived authorization information. Registration therefore describes
+what exists, not what a provider policy will permit.
+
+The selected provider ID is repeated at authorization and execution, so a
+directory entry that points Alice at Bob's endpoint is rejected before consent
+or materialization. A remote AAuth resource challenge is exchanged at the
+Person Server. If consent is
 required, the bridge asks the host to display an MCP elicitation containing only
 the PS-verified eDocs claims. A grant is submitted to the PS, the bridge polls
 for the final resource-scoped token, and the original MCP request is retried.
@@ -41,6 +55,14 @@ The demo launcher uses this project's `.venv`, including DuckDB and the
 editable adjacent dependencies. The stdio bridge launcher prefers this
 project's environment and retains the adjacent `mcp-aauth` environment as a
 workspace fallback.
+
+Demo coding-agent sessions start in a fresh empty temporary workspace and do not
+inherit `EDOCS_*` runtime values. The launchers disable general-purpose shell,
+filesystem-reading, web, browser, connector, and subagent tools; only the
+configured eDocs MCP tools and consent interaction are intended to remain
+available. The separately printed control-panel URL is for the human operator
+and is not included in the agent environment. This tool restriction is a demo
+boundary, not a replacement for OS isolation when running hostile code.
 
 ## Live demo
 
@@ -132,7 +154,7 @@ administration API. Metadata and enabled-state changes are isolated to that
 provider and remain in memory, so restarting the demo restores the seeded
 catalogs.
 
-The launcher also prints a localhost demo-control URL. Open it to switch
+The outer launcher also prints a human-only localhost demo-control URL. Open it to switch
 between Alice, Bob, and Carol; upload CSV files; enable or disable documents;
 and create, edit, or delete exact eDocs policy rules. The page delegates to
 the providers' mutable catalogs and controller policy stores, so changes take
@@ -176,8 +198,8 @@ the concrete derived ID only after this registration.
 In either coding agent, ask:
 
 ```text
-List the available providers, list Alice's resources, then use query_table@1
-on edoc://alice/doc_01JDEMO7F3A with:
+List the available providers, list Alice's resources, list the registered
+functions, then use query_table@1 on Alice's discovered resource with:
 {"statement":"SELECT name, department FROM document WHERE department = ? ORDER BY name","parameters":["engineering"]}
 ```
 

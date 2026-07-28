@@ -61,7 +61,7 @@ async def test_launcher_exposes_tool_over_real_stdio(tmp_path):
         "invoke_edocs_function",
     ]
     assert set(tools.tools[2].input_schema["properties"]) == {
-        "resource_uri",
+        "resource_ref",
         "function_id",
         "arguments",
     }

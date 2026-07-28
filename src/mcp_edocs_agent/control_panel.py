@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from aauth_edocs import (
+    FunctionDescriptor,
     MutableControllerPolicy,
     SentinelRegistry,
     parse_dataflow,
@@ -49,6 +50,16 @@ def create_control_panel(
             return providers[provider_id]
         except KeyError as error:
             raise LookupError("unknown provider") from error
+
+    def public_function(
+        descriptor: FunctionDescriptor,
+    ) -> dict[str, Any]:
+        return {
+            "function_id": descriptor.id,
+            "description": descriptor.description,
+            "input_schema": descriptor.input_schema,
+            "digest": descriptor.digest,
+        }
 
     @app.get("/")
     @app.get("/demo")
@@ -137,6 +148,24 @@ def create_control_panel(
                     }
                     for derived in sentinel.derived_documents.values()
                 ],
+            }
+        )
+
+    @app.get("/api/sentinel/functions")
+    def list_sentinel_functions():
+        descriptors = (
+            registration.descriptor
+            for _, registration in function_registry.items()
+        )
+        return jsonify(
+            {
+                "functions": [
+                    public_function(descriptor)
+                    for descriptor in sorted(
+                        descriptors,
+                        key=lambda item: item.id,
+                    )
+                ]
             }
         )
 
