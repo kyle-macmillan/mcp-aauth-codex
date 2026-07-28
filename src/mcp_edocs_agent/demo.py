@@ -780,7 +780,6 @@ class DemoStack:
                 f"EDOCS_PERSON={PERSON}\n"
                 f"EDOCS_DEMO_AGENT_ID={agent_id}\n"
                 f"EDOCS_DEMO_AGENT_ROLE={role}\n"
-                f"EDOCS_DEMO_CONTROL_URL={self.urls.control}/demo\n"
                 f"EDOCS_CLAUDE_MCP_CONFIG={claude_mcp_path}\n"
                 "EDOCS_FUNCTION_REGISTRY_URL="
                 f"{self.urls.control}/api/sentinel/functions\n"

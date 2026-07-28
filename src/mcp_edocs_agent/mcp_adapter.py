@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 from typing import Any
 
 from aauth_edocs import AAuthError, EdocsApprovalRequest
@@ -24,9 +25,11 @@ from .gateway import (
 
 SERVER_INSTRUCTIONS = (
     "Discover an eDoc by calling list_providers, then list_resources with the "
-    "selected provider ID. Never invent or alter an edoc:// URI. Invoke only "
-    "the function and exact arguments the user requested. Invocation may pause "
-    "for a separate eDocs consent decision."
+    "returned provider_ref. Call list_edocs_functions to discover registered "
+    "function IDs and input schemas. Invoke only with a resource_ref returned "
+    "by list_resources and the exact function and arguments the user requested. "
+    "References are opaque and session-scoped; never invent or alter them. "
+    "Invocation may pause for a separate eDocs consent decision."
 )
 
 READ_ONLY = ToolAnnotations(
@@ -95,13 +98,29 @@ def build_server(
         "eDocs AAuth agent bridge",
         instructions=SERVER_INSTRUCTIONS,
     )
+    provider_refs: dict[str, str] = {}
+    provider_refs_by_id: dict[str, str] = {}
+    resource_refs: dict[str, str] = {}
+
+    def opaque_ref(prefix: str) -> str:
+        return f"{prefix}_{secrets.token_urlsafe(18)}"
 
     @server.tool(
         description="List the configured eDocs providers.",
         annotations=READ_ONLY,
     )
     def list_providers() -> dict[str, list[dict[str, str]]]:
-        return gateway.list_providers()
+        providers = gateway.list_providers()["providers"]
+        discovered = []
+        for provider in providers:
+            provider_id = provider["provider_id"]
+            provider_ref = provider_refs_by_id.get(provider_id)
+            if provider_ref is None:
+                provider_ref = opaque_ref("provider")
+                provider_refs[provider_ref] = provider_id
+                provider_refs_by_id[provider_id] = provider_ref
+            discovered.append({**provider, "provider_ref": provider_ref})
+        return {"providers": discovered}
 
     @server.tool(
         description=(
@@ -111,9 +130,21 @@ def build_server(
         annotations=READ_ONLY,
     )
     async def list_resources(
-        provider_id: str,
+        provider_ref: str,
     ) -> dict[str, list[dict[str, Any]]]:
-        return await gateway.list_resources(provider_id)
+        provider_id = provider_refs.get(provider_ref)
+        if provider_id is None:
+            raise ValueError(
+                "unknown provider_ref; call list_providers and use an exact "
+                "returned provider_ref"
+            )
+        resources = (await gateway.list_resources(provider_id))["resources"]
+        discovered = []
+        for resource in resources:
+            resource_ref = opaque_ref("resource")
+            resource_refs[resource_ref] = str(resource["uri"])
+            discovered.append({**resource, "resource_ref": resource_ref})
+        return {"resources": discovered}
 
     @server.tool(
         description=(
@@ -124,11 +155,17 @@ def build_server(
         annotations=ADDITIVE,
     )
     async def invoke_edocs_function(
-        resource_uri: str,
+        resource_ref: str,
         function_id: str,
         arguments: dict[str, Any],
         ctx: Context,
     ) -> dict[str, Any]:
+        resource_uri = resource_refs.get(resource_ref)
+        if resource_uri is None:
+            raise ValueError(
+                "unknown resource_ref; call list_resources and use an exact "
+                "returned resource_ref"
+            )
         if not _supports_form_elicitation(ctx):
             raise RuntimeError(
                 "this eDocs operation requires an MCP client with form "
@@ -158,6 +195,19 @@ def build_server(
         )
 
     if config.function_registry_url:
+
+        @server.tool(
+            description=(
+                "List registered eDocs function descriptors and input schemas. "
+                "Registration does not imply that invocation is authorized."
+            ),
+            annotations=READ_ONLY,
+        )
+        async def list_edocs_functions() -> dict[
+            str,
+            list[dict[str, Any]],
+        ]:
+            return await gateway.list_edocs_functions()
 
         @server.tool(
             description=(

@@ -8,7 +8,7 @@ import pytest
 from mcp import Client
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
-from mcp_types import ElicitRequestParams, ElicitResult
+from mcp_types import ElicitRequestParams, ElicitResult, Resource as MCPResource
 
 from mcp_aauth import aauth_authorization
 from mcp_edocs_agent.config import AgentRuntimeConfig
@@ -51,20 +51,41 @@ async def test_bridge_completes_full_aauth_flow_after_mcp_elicitation():
         authorization = ctx.request_context.request.scope["aauth"]
         return resource.identity(authorization, edoc_id=edoc_id)["message"]
 
-    remote_app = remote.streamable_http_app(
-        host="resource.local",
-        authentication_middleware_factory=aauth_authorization(
-            key_resolver=resolver,
-            issuer=support.SENTINEL,
-            audience=support.RESOURCE,
-        ),
+    async def list_resources() -> list[MCPResource]:
+        return [
+            MCPResource(
+                uri=f"edoc://alice/{support.EDOC_ID}",
+                name=support.EDOC_ID,
+            )
+        ]
+
+    remote.list_resources = list_resources
+    remote_app = remote.streamable_http_app(host="resource.local")
+    authorized_app = aauth_authorization(
+        key_resolver=resolver,
+        issuer=support.SENTINEL,
+        audience=support.RESOURCE,
+    )(
+        remote_app
     )
-    challenged_app = support.DemoApplication(
+    challenge_router = support.DemoApplication(
         resource,
         remote_app,
         key_resolver=resolver,
         challenge_mcp=True,
     )
+
+    async def challenged_app(scope, receive, send):
+        token_type = support._presented_token_type(scope)
+        if (
+            scope["type"] == "http"
+            and scope.get("path") == "/mcp"
+            and token_type is not None
+            and token_type != support.AGENT_TYP
+        ):
+            await authorized_app(scope, receive, send)
+            return
+        await challenge_router(scope, receive, send)
     assert transport.request(
         "POST",
         f"{support.PS}/login",
@@ -92,13 +113,24 @@ async def test_bridge_completes_full_aauth_flow_after_mcp_elicitation():
             mode="legacy",
             elicitation_callback=approve,
         ) as client:
-                result = await client.call_tool(
-                    "invoke_edocs_function",
-                    {
-                        "resource_uri": f"edoc://alice/{support.EDOC_ID}",
-                        "function_id": support.FUNCTION,
-                        "arguments": {},
-                    },
+            providers = await client.call_tool("list_providers", {})
+            provider_ref = json.loads(providers.content[0].text)["providers"][0][
+                "provider_ref"
+            ]
+            resources = await client.call_tool(
+                "list_resources",
+                {"provider_ref": provider_ref},
+            )
+            resource_ref = json.loads(resources.content[0].text)["resources"][0][
+                "resource_ref"
+            ]
+            result = await client.call_tool(
+                "invoke_edocs_function",
+                {
+                    "resource_ref": resource_ref,
+                    "function_id": support.FUNCTION,
+                    "arguments": {},
+                },
             )
 
     assert result.is_error is False

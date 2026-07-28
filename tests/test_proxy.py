@@ -1,5 +1,6 @@
 import json
 
+import httpx2
 import pytest
 
 from aauth_edocs import (
@@ -95,7 +96,7 @@ async def test_server_exposes_only_constrained_edocs_tool():
         providers = await client.call_tool("list_providers", {})
         unknown = await client.call_tool(
             "list_resources",
-            {"provider_id": "unknown"},
+            {"provider_ref": "provider_fabricated"},
         )
 
     assert [tool.name for tool in tools.tools] == [
@@ -104,18 +105,56 @@ async def test_server_exposes_only_constrained_edocs_tool():
         "invoke_edocs_function",
     ]
     schema = tools.tools[2].input_schema
-    assert schema["required"] == ["resource_uri", "function_id", "arguments"]
+    assert schema["required"] == ["resource_ref", "function_id", "arguments"]
     assert set(schema["properties"]) == {
-        "resource_uri",
+        "resource_ref",
         "function_id",
         "arguments",
     }
-    assert (
-        json.loads(providers.content[0].text)["providers"][0]["provider_id"]
-        == "alice"
-    )
+    provider = json.loads(providers.content[0].text)["providers"][0]
+    assert provider["provider_id"] == "alice"
+    assert provider["provider_ref"].startswith("provider_")
     assert unknown.is_error is True
-    assert "unknown provider" in unknown.content[0].text
+    assert "unknown provider_ref" in unknown.content[0].text
+
+
+@pytest.mark.asyncio
+async def test_function_registry_connection_failure_hides_endpoint():
+    provider_key = SigningKey.generate("provider")
+    agent_key = SigningKey.generate("agent")
+    token = issue_agent_token(
+        issuer="https://ap.example",
+        agent="aauth:assistant@example",
+        agent_jwk=agent_key.public_jwk,
+        ps="https://ps.example",
+        key=provider_key,
+    )
+    config = ProxyConfig(
+        remote_mcp_url="https://resource.example/mcp",
+        function_registry_url="https://private-registry.example/functions",
+        agent_token=token,
+        signing_key=agent_key,
+    )
+
+    def unavailable(request):
+        raise httpx2.ConnectError(
+            "cannot connect to private-registry.example",
+            request=request,
+        )
+
+    server = build_server(
+        config,
+        agent_transport=object(),
+        consent_transport=object(),
+        http_transport=httpx2.MockTransport(unavailable),
+    )
+
+    async with Client(server, mode="legacy") as client:
+        result = await client.call_tool("list_edocs_functions", {})
+
+    assert result.is_error is True
+    assert "function registry is unavailable" in result.content[0].text
+    assert "private-registry.example" not in result.content[0].text
 
 
 def test_resource_uri_resolves_only_configured_provider_edocs():
