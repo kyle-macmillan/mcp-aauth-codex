@@ -4,7 +4,9 @@ import stat
 
 import pytest
 import requests
-from aauth_edocs import Dataflow, peek_jwt
+from aauth_edocs import Dataflow, SigningKey, issue_agent_token, peek_jwt
+from aauth_edocs.agent import RequestsTransport
+from aauth_edocs.ps import create_ps
 from mcp import Client
 from mcp_types import ElicitResult
 
@@ -19,10 +21,12 @@ from mcp_aauth_codex.demo import (
     QUERY_FUNCTION_ID,
     DemoStack,
     DemoUrls,
+    FlaskService,
 )
 from mcp_aauth_codex.proxy import build_server
 from mcp_aauth_codex.demo_database import DEMO_EDOC_ID, DEMO_RESOURCE_URI
 from mcp_aauth_codex.providers import ProviderEndpoint
+from mcp_edocs_agent.new_agent import write_agent_credentials
 
 
 def _free_url() -> str:
@@ -44,6 +48,50 @@ def _demo_urls() -> DemoUrls:
         carol_resource=_free_url(),
         control=_free_url(),
     )
+
+
+def _mint_agent(
+    state_dir,
+    urls: DemoUrls,
+    *,
+    role: str,
+    agent_id: str,
+    person: str,
+) -> FlaskService:
+    """Mirror new_agent.py: mint one agent identity and run its own PS."""
+    ap_key = SigningKey.from_private_jwk(
+        json.loads((state_dir / "keys" / "ap.jwk").read_text())
+    )
+    agent_key = SigningKey.generate(f"{role}-agent")
+    ps_key = SigningKey.generate("ps")
+    transport = RequestsTransport()
+    ps = create_ps(
+        urls.ps,
+        key=ps_key,
+        person=person,
+        policy=lambda _agent, _resource: "pending",
+        transport=transport,
+    )
+    agent_token = issue_agent_token(
+        issuer=urls.ap,
+        agent=agent_id,
+        agent_jwk=agent_key.public_jwk,
+        ps=urls.ps,
+        key=ap_key,
+    )
+    write_agent_credentials(
+        state_dir=state_dir,
+        urls=urls,
+        provider_path=state_dir / "providers.json",
+        role=role,
+        agent_id=agent_id,
+        person=person,
+        agent_key=agent_key,
+        agent_token=agent_token,
+    )
+    service = FlaskService(ps, int(urls.ps.rsplit(":", 1)[-1]))
+    service.start()
+    return service
 
 
 def _payload(result):
@@ -81,10 +129,18 @@ async def test_live_demo_stack_runs_complete_flow(monkeypatch, tmp_path):
         state_dir,
         _demo_urls(),
     )
+    ps_service = None
     try:
         stack.start()
+        ps_service = _mint_agent(
+            state_dir,
+            stack.urls,
+            role="producer",
+            agent_id=DESTINATION_AGENT,
+            person="alice",
+        )
         env = {}
-        for line in (state_dir / "demo.env").read_text().splitlines():
+        for line in (state_dir / "agents" / "producer.env").read_text().splitlines():
             name, value = line.split("=", 1)
             env[name] = value
             monkeypatch.setenv(name, value)
@@ -423,51 +479,39 @@ async def test_live_demo_stack_runs_complete_flow(monkeypatch, tmp_path):
         provider_values = json.loads(provider_file.read_text())
         assert provider_values[1]["mcp_url"] == stack.urls.bob_mcp
         assert provider_values[2]["mcp_url"] == stack.urls.carol_mcp
-        for name in ("agent.jwk", "agent.token", "providers.json", "demo.env"):
-            mode = stat.S_IMODE((state_dir / name).stat().st_mode)
-            assert mode == 0o600
-        agent_ids = {
-            "producer": DESTINATION_AGENT,
-            "carol": CAROL_RECIPIENT_AGENT,
-            "bob": BOB_RECIPIENT_AGENT,
-        }
-        key_paths = set()
-        for role, agent_id in agent_ids.items():
-            role_env = {}
-            env_path = state_dir / "agents" / f"{role}.env"
-            for line in env_path.read_text().splitlines():
-                name, value = line.split("=", 1)
-                role_env[name] = value
-            assert role_env["EDOCS_DEMO_AGENT_ID"] == agent_id
-            assert "EDOCS_DEMO_CONTROL_URL" not in role_env
-            claude_config = (
-                state_dir / "agents" / f"{role}.claude-mcp.json"
-            )
-            assert role_env["EDOCS_CLAUDE_MCP_CONFIG"] == str(
-                claude_config
-            )
-            claude_server = json.loads(claude_config.read_text())[
-                "mcpServers"
-            ]["edocs-aauth"]
-            assert claude_server["type"] == "stdio"
-            assert claude_server["env"]["EDOCS_AGENT_KEY_FILE"] == (
-                role_env["EDOCS_AGENT_KEY_FILE"]
-            )
-            assert claude_server["env"]["EDOCS_AGENT_TOKEN_FILE"] == (
-                role_env["EDOCS_AGENT_TOKEN_FILE"]
-            )
-            assert role_env["EDOCS_DEMO_AGENT_ROLE"] == role
-            assert peek_jwt(
-                (state_dir / "agents" / f"{role}.token").read_text()
-            )[1]["sub"] == agent_id
-            key_paths.add(role_env["EDOCS_AGENT_KEY_FILE"])
-            for suffix in ("jwk", "token", "env"):
-                assert stat.S_IMODE(
-                    (state_dir / "agents" / f"{role}.{suffix}").stat().st_mode
-                ) == 0o600
-            assert stat.S_IMODE(claude_config.stat().st_mode) == 0o600
-        assert len(key_paths) == 3
+        assert stat.S_IMODE(provider_file.stat().st_mode) == 0o600
+        role, agent_id = "producer", DESTINATION_AGENT
+        role_env = {}
+        env_path = state_dir / "agents" / f"{role}.env"
+        for line in env_path.read_text().splitlines():
+            name, value = line.split("=", 1)
+            role_env[name] = value
+        assert role_env["EDOCS_DEMO_AGENT_ID"] == agent_id
+        assert "EDOCS_DEMO_CONTROL_URL" not in role_env
+        claude_config = state_dir / "agents" / f"{role}.claude-mcp.json"
+        assert role_env["EDOCS_CLAUDE_MCP_CONFIG"] == str(claude_config)
+        claude_server = json.loads(claude_config.read_text())["mcpServers"][
+            "edocs-aauth"
+        ]
+        assert claude_server["type"] == "stdio"
+        assert claude_server["env"]["EDOCS_AGENT_KEY_FILE"] == (
+            role_env["EDOCS_AGENT_KEY_FILE"]
+        )
+        assert claude_server["env"]["EDOCS_AGENT_TOKEN_FILE"] == (
+            role_env["EDOCS_AGENT_TOKEN_FILE"]
+        )
+        assert role_env["EDOCS_DEMO_AGENT_ROLE"] == role
+        assert peek_jwt(
+            (state_dir / "agents" / f"{role}.token").read_text()
+        )[1]["sub"] == agent_id
+        for suffix in ("jwk", "token", "env"):
+            assert stat.S_IMODE(
+                (state_dir / "agents" / f"{role}.{suffix}").stat().st_mode
+            ) == 0o600
+        assert stat.S_IMODE(claude_config.stat().st_mode) == 0o600
     finally:
+        if ps_service is not None:
+            ps_service.stop()
         stack.stop()
 
     assert not (state_dir / "ready").exists()
@@ -480,9 +524,17 @@ async def test_live_policy_mutation_is_isolated_and_restartable(
 ):
     state_dir = tmp_path / "policy-state"
     stack = DemoStack(state_dir, _demo_urls())
+    ps_service = None
     try:
         stack.start()
-        for line in (state_dir / "demo.env").read_text().splitlines():
+        ps_service = _mint_agent(
+            state_dir,
+            stack.urls,
+            role="producer",
+            agent_id=DESTINATION_AGENT,
+            person="alice",
+        )
+        for line in (state_dir / "agents" / "producer.env").read_text().splitlines():
             name, value = line.split("=", 1)
             monkeypatch.setenv(name, value)
         proxy = build_server(ProxyConfig.from_env())
@@ -584,6 +636,8 @@ async def test_live_policy_mutation_is_isolated_and_restartable(
         assert restored_alice.is_error is False
         assert len(alice_policy.list_rules()) == 2
     finally:
+        if ps_service is not None:
+            ps_service.stop()
         stack.stop()
 
     restarted = DemoStack(state_dir, _demo_urls())
@@ -815,9 +869,17 @@ async def test_agent_registers_function_then_owner_policy_enables_it(
 ):
     state_dir = tmp_path / "agent-function-state"
     stack = DemoStack(state_dir, _demo_urls())
+    ps_service = None
     try:
         stack.start()
-        for line in (state_dir / "demo.env").read_text().splitlines():
+        ps_service = _mint_agent(
+            state_dir,
+            stack.urls,
+            role="producer",
+            agent_id=DESTINATION_AGENT,
+            person="alice",
+        )
+        for line in (state_dir / "agents" / "producer.env").read_text().splitlines():
             name, value = line.split("=", 1)
             monkeypatch.setenv(name, value)
         proxy = build_server(ProxyConfig.from_env())
@@ -938,4 +1000,6 @@ async def test_agent_registers_function_then_owner_policy_enables_it(
         ]
         assert len(prompts) == 2
     finally:
+        if ps_service is not None:
+            ps_service.stop()
         stack.stop()

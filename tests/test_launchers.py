@@ -59,7 +59,10 @@ def test_claude_launcher_uses_generated_strict_mcp_config(tmp_path):
         "--no-chrome",
         "--disable-slash-commands",
         "--disallowedTools",
-        "Bash,Read,Glob,Grep,WebFetch,WebSearch,Edit,Write,NotebookEdit,Task",
+        (
+            "Bash,Read,Glob,Grep,WebFetch,WebSearch,Edit,Write,NotebookEdit,"
+            "Task,TodoWrite,BashOutput,KillShell,ExitPlanMode"
+        ),
         "--model",
         "test-model",
     ]
@@ -143,11 +146,23 @@ def test_demo_launcher_keeps_background_output_out_of_tui(tmp_path):
     source_root = Path(__file__).resolve().parents[1]
     launcher = scripts_dir / "run_demo.sh"
     shutil.copy(source_root / "scripts" / "run_demo.sh", launcher)
+    infra_launcher = scripts_dir / "run_infra.sh"
+    shutil.copy(source_root / "scripts" / "run_infra.sh", infra_launcher)
+    new_agent_launcher = scripts_dir / "run_new_agent.sh"
+    shutil.copy(source_root / "scripts" / "run_new_agent.sh", new_agent_launcher)
     python_bin.write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         "if [[ $1 == *setup_demo_db.py ]]; then\n"
         "  exit 0\n"
+        "fi\n"
+        "if [[ $2 == mcp_edocs_agent.new_agent ]]; then\n"
+        "  state_dir=$4\n"
+        "  role=$6\n"
+        "  mkdir -p \"${state_dir}/agents\"\n"
+        "  touch \"${state_dir}/agents/${role}.ready\"\n"
+        "  trap 'exit 0' TERM\n"
+        "  while true; do sleep 1; done\n"
         "fi\n"
         "state_dir=$4\n"
         "mkdir -p \"${state_dir}\"\n"
@@ -162,7 +177,13 @@ def test_demo_launcher_keeps_background_output_out_of_tui(tmp_path):
         "#!/usr/bin/env bash\n"
         "echo tui-started\n"
     )
-    for path in (launcher, python_bin, agent_launcher):
+    for path in (
+        launcher,
+        infra_launcher,
+        new_agent_launcher,
+        python_bin,
+        agent_launcher,
+    ):
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
     completed = subprocess.run(
@@ -176,6 +197,6 @@ def test_demo_launcher_keeps_background_output_out_of_tui(tmp_path):
     assert "tui-started" in completed.stdout
     assert "backend-ready" not in completed.stdout
     assert "backend-warning" not in completed.stderr
-    assert (plugin_root / ".demo-state" / "demo.log").read_text() == (
-        "backend-ready\nbackend-warning\n"
-    )
+    infra_log = (plugin_root / ".demo-state" / "infra.log").read_text()
+    assert "backend-ready" in infra_log
+    assert "backend-warning" in infra_log

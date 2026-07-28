@@ -29,14 +29,12 @@ from aauth_edocs import (
     SentinelRegistry,
     SigningKey,
     create_sentinel,
-    issue_agent_token,
     register_materialization,
 )
 from aauth_edocs.agent import RequestsTransport
 from aauth_edocs.asrv import create_as
 from aauth_edocs.errors import INVALID_TOKEN
 from aauth_edocs.httpsig import KeyResolver
-from aauth_edocs.ps import create_ps
 from flask import Flask
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
@@ -68,7 +66,6 @@ from .functions import (
 )
 
 QUERY_FUNCTION_ID = "query_table@1"
-PERSON = "alice"
 ALICE_SOURCE_AGENT = "aauth:source@alice.demo.local"
 BOB_SOURCE_AGENT = "aauth:source@bob.demo.local"
 CAROL_SOURCE_AGENT = "aauth:source@carol.demo.local"
@@ -235,10 +232,7 @@ class DemoStack:
         keys = {
             name: SigningKey.generate(name)
             for name in (
-                "ap",
-                "ps",
                 "sentinel",
-                *(f"{role}-agent" for role in DEMO_AGENTS),
                 *(
                     key_name
                     for spec in provider_specs
@@ -249,6 +243,9 @@ class DemoStack:
                 ),
             )
         }
+        keys_dir = self.state_dir / "keys"
+        keys_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        keys["ap"] = _load_or_generate_key(keys_dir / "ap.jwk", "ap")
         seeded_functions = local_demo_function_registrations()
         self.function_registry = MutableFunctionRegistry()
         for function_id, registration in seeded_functions.items():
@@ -355,23 +352,6 @@ class DemoStack:
             key=keys["sentinel"],
             transport=transport,
         )
-        ps = create_ps(
-            urls.ps,
-            key=keys["ps"],
-            person=PERSON,
-            policy=lambda _agent, _resource: "pending",
-            transport=transport,
-        )
-        agent_tokens = {
-            role: issue_agent_token(
-                issuer=urls.ap,
-                agent=agent,
-                agent_jwk=keys[f"{role}-agent"].public_jwk,
-                ps=urls.ps,
-                key=keys["ap"],
-            )
-            for role, agent in DEMO_AGENTS.items()
-        }
         resolver = _static_and_remote_resolver(
             {
                 urls.ap: keys["ap"].public_jwk,
@@ -412,7 +392,6 @@ class DemoStack:
         )
         self.services = [
             FlaskService(ap, _port(urls.ap)),
-            FlaskService(ps, _port(urls.ps)),
             FlaskService(sentinel, _port(urls.sentinel)),
             *[
                 FlaskService(access_server, _port(deployment.access_server_url))
@@ -432,14 +411,7 @@ class DemoStack:
             ],
             FlaskService(control_panel, _port(urls.control)),
         ]
-        self._write_state(
-            {
-                role: keys[f"{role}-agent"]
-                for role in DEMO_AGENTS
-            },
-            agent_tokens,
-            deployments,
-        )
+        self._write_state(deployments)
 
     def _deployment(
         self,
@@ -713,14 +685,10 @@ class DemoStack:
 
     def _write_state(
         self,
-        agent_keys: dict[str, SigningKey],
-        agent_tokens: dict[str, str],
         deployments: tuple[ProviderDeployment, ...],
     ) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.state_dir, 0o700)
-        agents_dir = self.state_dir / "agents"
-        agents_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         provider_path = self.state_dir / "providers.json"
         provider_path.write_text(
             json.dumps(
@@ -736,81 +704,7 @@ class DemoStack:
                 indent=2,
             )
         )
-        bridge_launcher = (
-            Path(__file__).resolve().parents[2] / "scripts" / "run_proxy.sh"
-        )
-        agent_paths: list[Path] = []
-        for role, agent_id in DEMO_AGENTS.items():
-            key_path = agents_dir / f"{role}.jwk"
-            token_path = agents_dir / f"{role}.token"
-            env_path = agents_dir / f"{role}.env"
-            claude_mcp_path = agents_dir / f"{role}.claude-mcp.json"
-            key_path.write_text(
-                json.dumps(agent_keys[role].private_jwk())
-            )
-            token_path.write_text(agent_tokens[role])
-            claude_mcp_path.write_text(
-                json.dumps(
-                    {
-                        "mcpServers": {
-                            "edocs-aauth": {
-                                "type": "stdio",
-                                "command": str(bridge_launcher),
-                                "args": [],
-                                "env": {
-                                    "EDOCS_PROVIDER_FILE": str(provider_path),
-                                    "EDOCS_AGENT_KEY_FILE": str(key_path),
-                                    "EDOCS_AGENT_TOKEN_FILE": str(token_path),
-                                    "EDOCS_PERSON": PERSON,
-                                    "EDOCS_FUNCTION_REGISTRY_URL": (
-                                        f"{self.urls.control}"
-                                        "/api/sentinel/functions"
-                                    ),
-                                },
-                            }
-                        }
-                    },
-                    indent=2,
-                )
-            )
-            env_path.write_text(
-                f"EDOCS_PROVIDER_FILE={provider_path}\n"
-                f"EDOCS_AGENT_KEY_FILE={key_path}\n"
-                f"EDOCS_AGENT_TOKEN_FILE={token_path}\n"
-                f"EDOCS_PERSON={PERSON}\n"
-                f"EDOCS_DEMO_AGENT_ID={agent_id}\n"
-                f"EDOCS_DEMO_AGENT_ROLE={role}\n"
-                f"EDOCS_CLAUDE_MCP_CONFIG={claude_mcp_path}\n"
-                "EDOCS_FUNCTION_REGISTRY_URL="
-                f"{self.urls.control}/api/sentinel/functions\n"
-            )
-            agent_paths.extend(
-                (key_path, token_path, env_path, claude_mcp_path)
-            )
-
-        producer_key = self.state_dir / "agent.jwk"
-        producer_token = self.state_dir / "agent.token"
-        legacy_env = self.state_dir / "demo.env"
-        producer_key.write_text(
-            json.dumps(agent_keys["producer"].private_jwk())
-        )
-        producer_token.write_text(agent_tokens["producer"])
-        legacy_env.write_text(
-            (agents_dir / "producer.env").read_text()
-            .replace(str(agents_dir / "producer.jwk"), str(producer_key))
-            .replace(
-                str(agents_dir / "producer.token"),
-                str(producer_token),
-            )
-        )
-        for path in (
-            producer_key,
-            producer_token,
-            provider_path,
-            legacy_env,
-            *agent_paths,
-        ):
-            os.chmod(path, 0o600)
+        os.chmod(provider_path, 0o600)
 
     def start(self) -> None:
         started = []
@@ -828,7 +722,6 @@ class DemoStack:
     def wait_ready(self, timeout: float = 10) -> None:
         urls = [
             f"{self.urls.ap}/.well-known/aauth-agent.json",
-            f"{self.urls.ps}/.well-known/aauth-person.json",
             f"{self.urls.sentinel}/.well-known/aauth-access.json",
             f"{self.urls.alice_as}/.well-known/aauth-access.json",
             f"{self.urls.bob_as}/.well-known/aauth-access.json",
@@ -874,6 +767,15 @@ def _metadata_app(issuer: str, dwk: str, key: SigningKey) -> Flask:
         return {"keys": [key.public_jwk]}
 
     return app
+
+
+def _load_or_generate_key(path: Path, kid: str) -> SigningKey:
+    if path.exists():
+        return SigningKey.from_private_jwk(json.loads(path.read_text()))
+    key = SigningKey.generate(kid)
+    path.write_text(json.dumps(key.private_jwk()))
+    os.chmod(path, 0o600)
+    return key
 
 
 def _static_and_remote_resolver(keys: dict[str, dict]) -> KeyResolver:
