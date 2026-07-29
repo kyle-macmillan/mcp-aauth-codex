@@ -38,7 +38,7 @@ class AgentRuntimeConfig:
     provider_file: Path | None = None
     remote_mcp_url: str | None = None
     function_registry_url: str | None = None
-    control_url: str | None = None
+    sentinel_url: str | None = None
     agent_resource_url: str | None = None
     agent_id: str | None = None
 
@@ -88,11 +88,14 @@ class AgentRuntimeConfig:
         if not providers:
             raise RuntimeError("EDOCS_PROVIDER_FILE must contain at least one provider")
         function_registry_url = os.environ.get("EDOCS_FUNCTION_REGISTRY_URL")
-        control_url = os.environ.get("EDOCS_CONTROL_URL")
-        if control_url is None and function_registry_url:
-            control_url = function_registry_url.removesuffix(
-                "/api/sentinel/functions"
-            )
+        sentinel_url = os.environ.get("EDOCS_SENTINEL_URL")
+        if sentinel_url is None and function_registry_url:
+            for suffix in ("/registry/functions", "/api/sentinel/functions"):
+                if function_registry_url.endswith(suffix):
+                    sentinel_url = function_registry_url.removesuffix(suffix)
+                    break
+        if function_registry_url is None and sentinel_url:
+            function_registry_url = f"{sentinel_url.rstrip('/')}/registry/functions"
         return cls(
             agent_token=_read_secret("EDOCS_AGENT_TOKEN_FILE"),
             signing_key=SigningKey.from_private_jwk(key_data),
@@ -100,7 +103,7 @@ class AgentRuntimeConfig:
             providers=providers,
             provider_file=provider_path,
             function_registry_url=function_registry_url,
-            control_url=control_url,
+            sentinel_url=sentinel_url,
             agent_resource_url=os.environ.get("EDOCS_AGENT_RESOURCE_URL"),
             agent_id=os.environ.get("EDOCS_DEMO_AGENT_ID"),
         )

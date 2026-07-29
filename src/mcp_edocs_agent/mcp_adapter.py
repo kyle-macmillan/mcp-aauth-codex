@@ -197,7 +197,7 @@ def build_server(
             prompt,
         )
 
-    if config.agent_resource_url and config.control_url:
+    if config.agent_resource_url and config.sentinel_url:
 
         @server.tool(
             description=(

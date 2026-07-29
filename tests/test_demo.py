@@ -89,7 +89,7 @@ def _mint_agent(
         agent_key=agent_key,
         agent_token=agent_token,
         resource_url=_free_url(),
-        control_url=urls.control,
+        sentinel_url=urls.sentinel,
     )
     service = FlaskService(ps, int(urls.ps.rsplit(":", 1)[-1]))
     service.start()
@@ -496,7 +496,10 @@ async def test_live_demo_stack_runs_complete_flow(monkeypatch, tmp_path):
             name, value = line.split("=", 1)
             role_env[name] = value
         assert role_env["EDOCS_DEMO_AGENT_ID"] == agent_id
-        assert role_env["EDOCS_CONTROL_URL"] == stack.urls.control
+        assert role_env["EDOCS_SENTINEL_URL"] == stack.urls.sentinel
+        assert role_env["EDOCS_FUNCTION_REGISTRY_URL"] == (
+            f"{stack.urls.sentinel}/registry/functions"
+        )
         assert "EDOCS_AGENT_RESOURCE_URL" in role_env
         claude_config = state_dir / "agents" / f"{role}.claude-mcp.json"
         assert role_env["EDOCS_CLAUDE_MCP_CONFIG"] == str(claude_config)
@@ -796,7 +799,7 @@ def test_demo_control_panel_manages_isolated_provider_state(tmp_path):
         assert stack.policies["bob"].evaluate(sharing_rule.target) is None
 
         materialize = requests.post(
-            f"{root}/api/sentinel/materializations",
+            f"{stack.urls.sentinel}/registry/materializations",
             json={
                 "producer": {
                     "source": ALICE_SOURCE_AGENT,

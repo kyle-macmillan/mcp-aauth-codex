@@ -71,7 +71,7 @@ def write_agent_credentials(
     agent_key: SigningKey,
     agent_token: str,
     resource_url: str,
-    control_url: str,
+    sentinel_url: str,
 ) -> None:
     agents_dir = state_dir / "agents"
     agents_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -91,8 +91,8 @@ def write_agent_credentials(
         "EDOCS_DEMO_AGENT_ID": agent_id,
         "EDOCS_DEMO_AGENT_ROLE": role,
         "EDOCS_CLAUDE_MCP_CONFIG": str(claude_mcp_path),
-        "EDOCS_FUNCTION_REGISTRY_URL": f"{control_url}/api/sentinel/functions",
-        "EDOCS_CONTROL_URL": control_url,
+        "EDOCS_FUNCTION_REGISTRY_URL": f"{sentinel_url}/registry/functions",
+        "EDOCS_SENTINEL_URL": sentinel_url,
         "EDOCS_AGENT_RESOURCE_URL": resource_url,
     }
     claude_mcp_path.write_text(
@@ -113,7 +113,7 @@ def write_agent_credentials(
                                 "EDOCS_AGENT_TOKEN_FILE",
                                 "EDOCS_PERSON",
                                 "EDOCS_FUNCTION_REGISTRY_URL",
-                                "EDOCS_CONTROL_URL",
+                                "EDOCS_SENTINEL_URL",
                                 "EDOCS_AGENT_RESOURCE_URL",
                                 "EDOCS_DEMO_AGENT_ID",
                             }
@@ -181,25 +181,21 @@ def _wait_ready(url: str, timeout: float = 10) -> None:
 
 
 def _register_binding(
-    control_url: str,
+    sentinel_url: str,
     *,
     source_agent: str,
     source_ps: str,
     resource_issuer: str,
     resource_jkt: str,
-    role: str | None = None,
 ) -> None:
-    payload = {
-        "source_agent": source_agent,
-        "source_ps": source_ps,
-        "resource_issuer": resource_issuer,
-        "resource_jkt": resource_jkt,
-    }
-    if role is not None:
-        payload["role"] = role
     response = requests.post(
-        f"{control_url}/api/sentinel/bindings",
-        json=payload,
+        f"{sentinel_url}/registry/bindings",
+        json={
+            "source_agent": source_agent,
+            "source_ps": source_ps,
+            "resource_issuer": resource_issuer,
+            "resource_jkt": resource_jkt,
+        },
         timeout=5,
     )
     if response.status_code not in {200, 201}:
@@ -215,7 +211,6 @@ def _build_agent_resource_server(
     sentinel_url: str,
     source_agent: str,
     resource_key: SigningKey,
-    control_url: str,
 ) -> Any:
     catalog = ProviderCatalog()
     function_registry = MutableFunctionRegistry()
@@ -265,7 +260,7 @@ def _build_agent_resource_server(
         from aauth_edocs import serialize_dataflow
 
         response = requests.post(
-            f"{control_url}/api/sentinel/materializations",
+            f"{sentinel_url}/registry/materializations",
             json={
                 "producer": serialize_dataflow(producer),
                 "output": output,
@@ -364,7 +359,7 @@ def main() -> None:
         agent_key=agent_key,
         agent_token=agent_token,
         resource_url=resource_url,
-        control_url=urls.control,
+        sentinel_url=urls.sentinel,
     )
 
     resource_app = _build_agent_resource_server(
@@ -374,7 +369,6 @@ def main() -> None:
         sentinel_url=urls.sentinel,
         source_agent=agent_id,
         resource_key=resource_key,
-        control_url=urls.control,
     )
 
     ps_service = FlaskService(ps, ps_port)
@@ -394,12 +388,11 @@ def main() -> None:
         _wait_ready(f"{ps_url}/.well-known/aauth-person.json")
         _wait_ready(f"{resource_url}/admin/documents")
         _register_binding(
-            urls.control,
+            urls.sentinel,
             source_agent=agent_id,
             source_ps=ps_url,
             resource_issuer=resource_url,
             resource_jkt=resource_key.thumbprint,
-            role=role,
         )
         append_provider(
             provider_path,

@@ -91,7 +91,9 @@ def test_codex_launcher_disables_general_purpose_tools(tmp_path):
         "EDOCS_PERSON=alice\n"
         "EDOCS_DEMO_AGENT_ID=aauth:producer@demo.local\n"
         "EDOCS_DEMO_AGENT_ROLE=producer\n"
-        "EDOCS_FUNCTION_REGISTRY_URL=http://127.0.0.1:8721/functions\n"
+        "EDOCS_FUNCTION_REGISTRY_URL=http://127.0.0.1:8713/registry/functions\n"
+        "EDOCS_SENTINEL_URL=http://127.0.0.1:8713\n"
+        "EDOCS_AGENT_RESOURCE_URL=http://127.0.0.1:8731\n"
     )
     env = {
         **os.environ,

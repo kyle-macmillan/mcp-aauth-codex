@@ -367,6 +367,7 @@ class DemoStack:
             registry=self.registry,
             key=keys["sentinel"],
             transport=transport,
+            on_function_register=self._function_registrar(),
         )
         resolver = _static_and_remote_resolver(
             {
@@ -406,7 +407,6 @@ class DemoStack:
             function_registry=self.function_registry,
             register_function=self._function_registrar(),
             agents=dict(DEMO_AGENTS),
-            derived_store=self.derived_store,
         )
         self.services = [
             FlaskService(ap, _port(urls.ap)),

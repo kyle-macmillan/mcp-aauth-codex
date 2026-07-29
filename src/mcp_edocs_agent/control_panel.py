@@ -9,10 +9,8 @@ from typing import Any
 from aauth_edocs import (
     FunctionDescriptor,
     MutableControllerPolicy,
-    ResourceBinding,
     SentinelRegistry,
     parse_dataflow,
-    register_materialization,
     serialize_dataflow,
     serialize_rule,
 )
@@ -23,8 +21,6 @@ from mcp_edocs_provider import (
     MutableFunctionRegistry,
     ProviderCatalog,
 )
-
-from .derived_store import DerivedPayloadStore
 
 
 @dataclass(frozen=True)
@@ -46,7 +42,6 @@ def create_control_panel(
     function_registry: MutableFunctionRegistry,
     register_function: Callable[[dict[str, Any]], LoadedFunction],
     agents: MutableMapping[str, str],
-    derived_store: DerivedPayloadStore | None = None,
 ) -> Flask:
     """Build the demo-only UI and JSON adapter over reusable stores."""
     app = Flask("edocs-demo-control-panel")
@@ -151,172 +146,13 @@ def create_control_panel(
                         "output_digest": derived.output_digest,
                         "custodian": derived.custodian,
                         "controllers": list(derived.controllers),
+                        "published": derived.edoc_id
+                        in sentinel.published_derived,
                     }
                     for derived in sentinel.derived_documents.values()
                 ],
             }
         )
-
-    @app.post("/api/sentinel/bindings")
-    def register_binding():
-        body = _json_object()
-        required = {
-            "source_agent",
-            "source_ps",
-            "resource_issuer",
-            "resource_jkt",
-        }
-        optional = {"role"}
-        if not required.issubset(body) or set(body) - required - optional:
-            raise ValueError(
-                "binding requires source_agent, source_ps, "
-                "resource_issuer, and resource_jkt"
-            )
-        for key in required:
-            if not isinstance(body[key], str) or not body[key]:
-                raise ValueError(f"{key} must be a non-empty string")
-        role = body.get("role")
-        if role is not None and (not isinstance(role, str) or not role):
-            raise ValueError("role must be a non-empty string when provided")
-        source_agent = body["source_agent"]
-        existing = sentinel.resource_bindings.get(source_agent)
-        binding = ResourceBinding(
-            source_ps=body["source_ps"],
-            resource_issuer=body["resource_issuer"],
-            resource_jkt=body["resource_jkt"],
-        )
-        if existing is not None and existing != binding:
-            raise ValueError(
-                f"source_agent already bound to a different resource: {source_agent}"
-            )
-        sentinel.resource_bindings[source_agent] = binding
-        if role is not None:
-            prior = agents.get(role)
-            if prior is not None and prior != source_agent:
-                raise ValueError(
-                    f"role already registered to a different agent: {role}"
-                )
-            agents[role] = source_agent
-        return jsonify(
-            {
-                "binding": {
-                    "source_agent": source_agent,
-                    "source_ps": binding.source_ps,
-                    "resource_issuer": binding.resource_issuer,
-                    "resource_jkt": binding.resource_jkt,
-                },
-                "agents": [
-                    {"role": item_role, "agent_id": agent_id}
-                    for item_role, agent_id in agents.items()
-                ],
-            }
-        ), 201
-
-    @app.post("/api/sentinel/controllers")
-    def register_controllers():
-        body = _json_object()
-        if set(body) != {"resource_issuer", "edoc_id", "controllers"}:
-            raise ValueError(
-                "controller registration requires resource_issuer, "
-                "edoc_id, and controllers"
-            )
-        resource_issuer = body["resource_issuer"]
-        edoc_id = body["edoc_id"]
-        controllers = body["controllers"]
-        if not isinstance(resource_issuer, str) or not resource_issuer:
-            raise ValueError("resource_issuer must be a non-empty string")
-        if not isinstance(edoc_id, str) or not edoc_id:
-            raise ValueError("edoc_id must be a non-empty string")
-        if (
-            not isinstance(controllers, list)
-            or not controllers
-            or any(not isinstance(item, str) or not item for item in controllers)
-        ):
-            raise ValueError("controllers must be a non-empty string list")
-        key = (resource_issuer, edoc_id)
-        controller_tuple = tuple(controllers)
-        existing = sentinel.controllers.get(key)
-        if existing is not None and existing != controller_tuple:
-            raise ValueError(
-                "controllers already registered for this eDoc with a different set"
-            )
-        derived = sentinel.derived_documents.get(edoc_id)
-        if derived is not None and tuple(derived.controllers) != controller_tuple:
-            raise ValueError(
-                "controllers must match the inherited derived eDoc controllers"
-            )
-        sentinel.controllers[key] = controller_tuple
-        if derived_store is not None:
-            try:
-                derived_store.mark_published(edoc_id)
-            except LookupError:
-                pass
-        return jsonify(
-            {
-                "controller": {
-                    "resource_issuer": resource_issuer,
-                    "edoc_id": edoc_id,
-                    "controllers": list(controller_tuple),
-                }
-            }
-        ), 201
-
-    @app.get("/api/sentinel/derived/<edoc_id>")
-    def get_derived(edoc_id: str):
-        # Authority (custodian/controllers/producer/digest) comes from the
-        # in-memory SentinelRegistry. The on-disk derived store only holds the
-        # output body and publish flag for the demo control panel.
-        registry_derived = sentinel.derived_documents.get(edoc_id)
-        if registry_derived is None:
-            raise LookupError(f"unknown derived eDoc: {edoc_id}")
-        if derived_store is None:
-            raise LookupError("derived store is unavailable")
-        value = derived_store.read(edoc_id)
-        return jsonify(
-            {
-                "edoc_id": registry_derived.edoc_id,
-                "custodian": registry_derived.custodian,
-                "controllers": list(registry_derived.controllers),
-                "output_digest": registry_derived.output_digest,
-                "producer": serialize_dataflow(registry_derived.producer),
-                "producer_fingerprint": registry_derived.producer_fingerprint,
-                "output": value["output"],
-                "published": value.get("published", False),
-            }
-        )
-
-    @app.post("/api/sentinel/materializations")
-    def record_materialization():
-        body = _json_object()
-        if set(body) != {"producer", "output", "controllers"}:
-            raise ValueError(
-                "materialization requires producer, output, and controllers"
-            )
-        if not isinstance(body["output"], dict):
-            raise ValueError("output must be a JSON object")
-        controllers = body["controllers"]
-        if (
-            not isinstance(controllers, list)
-            or not controllers
-            or any(not isinstance(item, str) or not item for item in controllers)
-        ):
-            raise ValueError("controllers must be a non-empty string list")
-        producer = parse_dataflow(body["producer"])
-        derived = register_materialization(
-            sentinel,
-            producer=producer,
-            output=body["output"],
-            controllers=tuple(controllers),
-        )
-        if derived_store is not None:
-            derived_store.write(derived, body["output"])
-        return jsonify(
-            {
-                "derived_edoc_id": derived.edoc_id,
-                "custodian": derived.custodian,
-                "controllers": list(derived.controllers),
-            }
-        ), 201
 
     @app.get("/api/sentinel/functions")
     def list_sentinel_functions():
@@ -372,34 +208,22 @@ def create_control_panel(
                 continue
             if derived.edoc_id in hosted_ids:
                 continue
-            published = False
-            if derived_store is not None:
-                try:
-                    published = bool(
-                        derived_store.read(derived.edoc_id).get("published")
-                    )
-                except LookupError:
-                    pass
             producer = serialize_dataflow(derived.producer)
             documents.append(
                 {
                     "edoc_id": derived.edoc_id,
                     "resource_uri": derived.resource_uri,
-                    "title": (
-                        f"Derived from {derived.producer.function}"
-                        f"({derived.producer.document})"
-                    ),
+                    "title": f"Derived {derived.edoc_id}",
                     "description": (
-                        f"Controlled by this AS; custodian "
-                        f"{derived.custodian}; "
-                        f"{'published' if published else 'unpublished'}"
+                        f"Output of {derived.producer.function} "
+                        f"for {derived.custodian}"
                     ),
                     "enabled": True,
                     "kind": "derived",
-                    "custodian": derived.custodian,
-                    "published": published,
-                    "controllers": list(derived.controllers),
+                    "published": derived.edoc_id in sentinel.published_derived,
                     "producer": producer,
+                    "custodian": derived.custodian,
+                    "controllers": list(derived.controllers),
                 }
             )
         return jsonify({"documents": documents})

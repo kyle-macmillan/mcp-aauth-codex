@@ -37,8 +37,9 @@ def test_loads_secrets_from_files(monkeypatch, tmp_path):
     monkeypatch.setenv("EDOCS_PERSON", "alice")
     monkeypatch.setenv(
         "EDOCS_FUNCTION_REGISTRY_URL",
-        "http://127.0.0.1:8721/api/sentinel/functions",
+        "http://127.0.0.1:8713/registry/functions",
     )
+    monkeypatch.setenv("EDOCS_SENTINEL_URL", "http://127.0.0.1:8713")
 
     config = ProxyConfig.from_env()
 
@@ -51,8 +52,9 @@ def test_loads_secrets_from_files(monkeypatch, tmp_path):
     assert config.signing_key.public_jwk == key.public_jwk
     assert config.person == "alice"
     assert config.function_registry_url == (
-        "http://127.0.0.1:8721/api/sentinel/functions"
+        "http://127.0.0.1:8713/registry/functions"
     )
+    assert config.sentinel_url == "http://127.0.0.1:8713"
 
 
 def test_requires_private_key_file(monkeypatch, tmp_path):

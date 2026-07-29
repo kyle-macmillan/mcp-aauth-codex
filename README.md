@@ -18,7 +18,7 @@ Set these variables before starting a coding-agent host:
 - `EDOCS_AGENT_TOKEN_FILE`: path to the agent token
 - `EDOCS_AGENT_KEY_FILE`: path to the agent's private JWK
 - `EDOCS_PERSON`: prototype Person Server login identity used by the demo
-- `EDOCS_CONTROL_URL`: localhost control panel (set by `new_agent` for publish)
+- `EDOCS_SENTINEL_URL`: Sentinel base URL (set by `new_agent` for publish and registry)
 - `EDOCS_AGENT_RESOURCE_URL`: this agent's resource server (set by `new_agent`)
 - `EDOCS_DEMO_AGENT_ID`: this agent's AAuth identity (set by `new_agent`)
 
@@ -219,7 +219,7 @@ derived eDocs and their provenance. Alice's future-output rule begins matching
 the concrete derived ID only after this registration. The derived eDoc is not
 discoverable to peers until the custodian agent publishes it with
 `publish_derived_edoc`, which catalogs it on that agent's resource server and
-registers the inherited controllers with the Sentinel.
+registers the inherited controllers with the Sentinel registry API.
 
 In either coding agent, ask:
 

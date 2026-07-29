@@ -317,18 +317,19 @@ class EdocsGateway:
         description: str | None = None,
     ) -> dict[str, Any]:
         """Expose one custodian-owned derived eDoc on this agent's resource server."""
-        if not self.config.control_url:
-            raise RuntimeError("control panel URL is not configured")
+        if not self.config.sentinel_url:
+            raise RuntimeError("sentinel URL is not configured")
         if not self.config.agent_resource_url:
             raise RuntimeError("agent resource URL is not configured")
         if not self.config.agent_id:
             raise RuntimeError("agent id is not configured")
+        sentinel = self.config.sentinel_url.rstrip("/")
         options = {"follow_redirects": False}
         if self.http_transport is not None:
             options["transport"] = self.http_transport
         async with httpx2.AsyncClient(**options) as client:
             derived_response = await client.get(
-                f"{self.config.control_url}/api/sentinel/derived/{derived_edoc_id}"
+                f"{sentinel}/registry/derived/{derived_edoc_id}"
             )
             if derived_response.status_code == 404:
                 raise LookupError(f"unknown derived eDoc: {derived_edoc_id}")
@@ -373,7 +374,7 @@ class EdocsGateway:
                 )
                 raise ValueError(detail or "failed to publish derived eDoc")
             controller_response = await client.post(
-                f"{self.config.control_url}/api/sentinel/controllers",
+                f"{sentinel}/registry/controllers",
                 json={
                     "resource_issuer": self.config.agent_resource_url,
                     "edoc_id": derived_edoc_id,

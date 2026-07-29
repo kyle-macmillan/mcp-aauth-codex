@@ -99,7 +99,7 @@ def _start_agent_with_resource(
         agent_key=agent_key,
         agent_token=agent_token,
         resource_url=resource_url,
-        control_url=urls.control,
+        sentinel_url=urls.sentinel,
     )
     resource_app = _build_agent_resource_server(
         provider_id=role,
@@ -108,7 +108,6 @@ def _start_agent_with_resource(
         sentinel_url=urls.sentinel,
         source_agent=agent_id,
         resource_key=resource_key,
-        control_url=urls.control,
     )
     ps_service = FlaskService(ps, int(ps_url.rsplit(":", 1)[-1]))
     resource_service = ASGIService(resource_app, int(resource_url.rsplit(":", 1)[-1]))
@@ -128,7 +127,7 @@ def _start_agent_with_resource(
     else:
         raise RuntimeError(f"agent {role} failed readiness")
     _register_binding(
-        urls.control,
+        urls.sentinel,
         source_agent=agent_id,
         source_ps=ps_url,
         resource_issuer=resource_url,
@@ -350,7 +349,7 @@ async def test_publish_rejects_non_custodian(monkeypatch, tmp_path):
         services.extend([carol_ps, carol_rs])
 
         materialize = requests.post(
-            f"{stack.urls.control}/api/sentinel/materializations",
+            f"{stack.urls.sentinel}/registry/materializations",
             json={
                 "producer": {
                     "source": "aauth:source@alice.demo.local",

@@ -39,6 +39,7 @@ case "${client}" in
       -u EDOCS_DEMO_AGENT_ROLE \
       -u EDOCS_DEMO_CONTROL_URL \
       -u EDOCS_CONTROL_URL \
+      -u EDOCS_SENTINEL_URL \
       -u EDOCS_AGENT_RESOURCE_URL \
       -u EDOCS_CLAUDE_MCP_CONFIG \
       -u EDOCS_FUNCTION_REGISTRY_URL \
@@ -64,7 +65,7 @@ case "${client}" in
       -c "mcp_servers.edocs-aauth.env.EDOCS_AGENT_TOKEN_FILE=\"${EDOCS_AGENT_TOKEN_FILE}\"" \
       -c "mcp_servers.edocs-aauth.env.EDOCS_PERSON=\"${EDOCS_PERSON}\"" \
       -c "mcp_servers.edocs-aauth.env.EDOCS_FUNCTION_REGISTRY_URL=\"${EDOCS_FUNCTION_REGISTRY_URL}\"" \
-      -c "mcp_servers.edocs-aauth.env.EDOCS_CONTROL_URL=\"${EDOCS_CONTROL_URL}\"" \
+      -c "mcp_servers.edocs-aauth.env.EDOCS_SENTINEL_URL=\"${EDOCS_SENTINEL_URL}\"" \
       -c "mcp_servers.edocs-aauth.env.EDOCS_AGENT_RESOURCE_URL=\"${EDOCS_AGENT_RESOURCE_URL}\"" \
       -c "mcp_servers.edocs-aauth.env.EDOCS_DEMO_AGENT_ID=\"${EDOCS_DEMO_AGENT_ID}\"" \
       "$@"
@@ -82,6 +83,7 @@ case "${client}" in
       -u EDOCS_DEMO_AGENT_ROLE \
       -u EDOCS_DEMO_CONTROL_URL \
       -u EDOCS_CONTROL_URL \
+      -u EDOCS_SENTINEL_URL \
       -u EDOCS_AGENT_RESOURCE_URL \
       -u EDOCS_CLAUDE_MCP_CONFIG \
       -u EDOCS_FUNCTION_REGISTRY_URL \
