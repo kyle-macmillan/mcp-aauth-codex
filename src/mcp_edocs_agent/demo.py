@@ -74,10 +74,15 @@ PRODUCER_AGENT = "aauth:producer@demo.local"
 DESTINATION_AGENT = PRODUCER_AGENT
 CAROL_RECIPIENT_AGENT = "aauth:carol@demo.local"
 BOB_RECIPIENT_AGENT = "aauth:bob@demo.local"
+# Default identity minted by `run_new_agent.sh` for an unnamed role; granted
+# a narrow exact-match rule below to demo the "policy explicitly allows this
+# outside party" path rather than the default-deny path.
+MALLORY_RECIPIENT_AGENT = "aauth:mallory@newparty.local"
 DEMO_AGENTS = {
     "producer": PRODUCER_AGENT,
     "carol": CAROL_RECIPIENT_AGENT,
     "bob": BOB_RECIPIENT_AGENT,
+    "mallory": MALLORY_RECIPIENT_AGENT,
 }
 
 
@@ -330,6 +335,15 @@ class DemoStack:
                 OutputOf(query_flows["alice"]),
                 CAROL_RECIPIENT_AGENT,
                 {},
+            )
+        )
+        self.policies["alice"].create_rule(
+            Dataflow.from_arguments(
+                ALICE_SOURCE_AGENT,
+                QUERY_FUNCTION_ID,
+                DEMO_EDOC_ID,
+                MALLORY_RECIPIENT_AGENT,
+                query_arguments,
             )
         )
         self.catalogs = {
