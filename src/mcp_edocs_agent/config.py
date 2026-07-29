@@ -43,6 +43,7 @@ class AgentRuntimeConfig:
     agent_id: str | None = None
 
     def provider_directory(self) -> tuple[ProviderEndpoint, ...]:
+        """Return MCP discovery entries; not an authorization authority."""
         if self.provider_file is not None and self.provider_file.exists():
             try:
                 provider_values = json.loads(

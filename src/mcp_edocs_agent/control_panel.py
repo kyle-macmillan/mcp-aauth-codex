@@ -263,20 +263,23 @@ def create_control_panel(
 
     @app.get("/api/sentinel/derived/<edoc_id>")
     def get_derived(edoc_id: str):
-        if derived_store is None:
-            raise LookupError("derived store is unavailable")
-        value = derived_store.read(edoc_id)
+        # Authority (custodian/controllers/producer/digest) comes from the
+        # in-memory SentinelRegistry. The on-disk derived store only holds the
+        # output body and publish flag for the demo control panel.
         registry_derived = sentinel.derived_documents.get(edoc_id)
         if registry_derived is None:
             raise LookupError(f"unknown derived eDoc: {edoc_id}")
+        if derived_store is None:
+            raise LookupError("derived store is unavailable")
+        value = derived_store.read(edoc_id)
         return jsonify(
             {
-                "edoc_id": value["edoc_id"],
-                "custodian": value["custodian"],
-                "controllers": value["controllers"],
-                "output_digest": value["output_digest"],
-                "producer": value["producer"],
-                "producer_fingerprint": value["producer_fingerprint"],
+                "edoc_id": registry_derived.edoc_id,
+                "custodian": registry_derived.custodian,
+                "controllers": list(registry_derived.controllers),
+                "output_digest": registry_derived.output_digest,
+                "producer": serialize_dataflow(registry_derived.producer),
+                "producer_fingerprint": registry_derived.producer_fingerprint,
                 "output": value["output"],
                 "published": value.get("published", False),
             }

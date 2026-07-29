@@ -707,6 +707,9 @@ class DemoStack:
         self,
         deployments: tuple[ProviderDeployment, ...],
     ) -> None:
+        # Discovery directory for coding-agent bridges only (EDOCS_PROVIDER_FILE).
+        # PS / AS / Sentinel authorization never reads this file; agents still
+        # obtain resource-scoped tokens over the live AAuth HTTP flow.
         self.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.state_dir, 0o700)
         provider_path = self.state_dir / "providers.json"

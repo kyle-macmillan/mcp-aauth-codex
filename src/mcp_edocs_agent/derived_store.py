@@ -1,4 +1,8 @@
-"""Shared on-disk store for materialized derived eDoc payloads."""
+"""Demo-only on-disk cache for materialized derived eDoc output bodies.
+
+Authorization authority lives in the in-process ``SentinelRegistry``. This
+store is not consulted by PS, AS, Sentinel, or agent token verification.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +15,7 @@ from aauth_edocs import DerivedEdoc, serialize_dataflow
 
 
 class DerivedPayloadStore:
-    """Persist derived eDoc metadata and output bodies under ``state_dir``."""
+    """Persist derived eDoc output bodies for the demo control panel/publish UI."""
 
     def __init__(self, state_dir: Path) -> None:
         self.root = state_dir / "derived"

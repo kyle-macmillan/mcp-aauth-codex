@@ -70,27 +70,44 @@ boundary, not a replacement for OS isolation when running hostile code.
 
 ## Live demo
 
-From this directory, launch Codex (the backward-compatible default):
+Start shared infra in one terminal (Alice/Bob/Carol resource and access
+servers, Sentinel, and the control panel):
 
 ```bash
-scripts/run_demo.sh
-# Equivalent:
-scripts/run_demo.sh --client codex
+scripts/run_infra.sh
 ```
 
-Or launch Claude Code:
+In another terminal, attach a coding agent. `CLIENT` is `codex` or `claude`,
+and `ROLE` is a local label such as `producer`, `carol`, or `bob`:
 
 ```bash
-scripts/run_demo.sh --client claude
+scripts/run_new_agent.sh codex producer \
+  --agent-id aauth:producer@demo.local \
+  --person alice \
+  --display-name Producer
+```
+
+Or Claude Code:
+
+```bash
+scripts/run_new_agent.sh claude producer \
+  --agent-id aauth:producer@demo.local \
+  --person alice \
+  --display-name Producer
 ```
 
 Arguments after `--` are passed to the selected client. For example:
 
 ```bash
-scripts/run_demo.sh --client claude -- --model sonnet
+scripts/run_new_agent.sh claude producer \
+  --agent-id aauth:producer@demo.local \
+  --person alice \
+  --display-name Producer \
+  -- --model sonnet
 ```
 
-For three independent sessions, install `tmux` and run either:
+Convenience wrappers still exist: `scripts/run_demo.sh` starts infra and one
+Producer session, and for three independent sessions install `tmux` and run:
 
 ```bash
 scripts/run_multi_agent_demo.sh
@@ -108,7 +125,6 @@ All three sessions share the same provider directory, function registry,
 Sentinel, and control panel, while each bridge receives only its own credential
 files. The generated configurations live under
 `.demo-state/agents/{producer,carol,bob}.{env,jwk,token}` with mode `0600`.
-The existing `run_demo.sh` remains the single-window Producer launcher.
 
 Carol and Bob can demonstrate independent identity and public provider
 discovery. After Producer successfully invokes an upstream function, the
@@ -220,6 +236,7 @@ agents, resource, Sentinel, and controllers. After approval and Sentinel
 authorization, the resource verifies the invocation digest and executes it
 against its own DuckDB instance.
 
-The launcher stops the localhost services when the coding agent exits. The
+`run_infra.sh` keeps the localhost services up until you stop it with Ctrl-C;
+agent sessions from `run_new_agent.sh` exit independently. The
 `EDOCS_PERSON=alice` login and generated `.demo-state/` credentials are
 strictly demo-only; they are not a production person-authentication design.
