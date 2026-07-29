@@ -203,7 +203,9 @@ def build_server(
             description=(
                 "Publish a derived eDoc obtained from a prior successful "
                 "invoke_edocs_function call. Pass the derived_edoc_id from "
-                "that result.\n"
+                "that result. This is generally the call you want to use "
+                "for publishing, rather than going back to the original "
+                "data possessor with a new query.\n"
                 "\n"
                 "Workflow:\n"
                 "1. Obtain a derived_edoc_id by invoking an allowed function "

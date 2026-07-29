@@ -246,3 +246,75 @@ against its own DuckDB instance.
 agent sessions from `run_new_agent.sh` exit independently. The
 `EDOCS_PERSON=alice` login and generated `.demo-state/` credentials are
 strictly demo-only; they are not a production person-authentication design.
+
+## Testing derived data (query → transform → publish → peer fetch)
+
+Alice seeds an exact-dataflow policy that lets Mallory
+(`aauth:mallory@newparty.local`) run the engineering `query_table@1` call
+below. Use that to exercise local transform-on-publish and peer discovery of
+the published result.
+
+1. Start shared infra:
+
+```bash
+scripts/run_infra.sh
+```
+
+2. In another terminal, start the publisher agent as Mallory:
+
+```bash
+scripts/run_new_agent.sh claude mallory \
+  --display-name Mallory
+```
+
+(`--agent-id` defaults to `aauth:mallory@newparty.local`, which matches the
+seeded Alice policy.)
+
+3. In Mallory's session, fetch Alice's engineering employees with the exact
+   allowed arguments:
+
+```text
+Get Alice's engineering employees. Exact arguments: {"parameters":["engineering"],"statement":"SELECT name, department FROM document WHERE department = ? ORDER BY name"}
+```
+
+Approve the consent elicitation when prompted. A successful invoke returns a
+`derived_edoc_id`.
+
+4. Still in Mallory's session, ask it to transform and publish:
+
+```text
+Locally compute a groupby of the engineering team, and publish that
+transformed data. Use the provided MCP publish call.
+```
+
+The agent should call `publish_derived_edoc` with the prior `derived_edoc_id`
+and an optional registered transform (for example `department_counts@1` with
+`function_args: {}`). That applies the transform locally before cataloging the
+result on Mallory's resource server. Note the published `derived_edoc_id` (the
+transform mints a new id).
+
+5. Before a peer can invoke the published eDoc, add a controller policy for it
+   in the demo control panel (Alice tab, since Alice remains an inherited
+   controller). Substitute the concrete id from step 4:
+
+```text
+identity@1 may run on derived_99716436f7724928b74b6eb08bf607ad
+from aauth:mallory@newparty.local to aauth:dave@newparty.local
+
+Exact arguments: {}
+```
+
+6. In a third terminal, start Dave and ask it to fetch Mallory's data:
+
+```bash
+scripts/run_new_agent.sh claude dave \
+  --display-name Dave
+```
+
+```text
+Get Mallory's data.
+```
+
+Dave should discover Mallory via `list_providers` / `list_resources`, then
+invoke `identity@1` on the published derived eDoc under the policy from
+step 5.
