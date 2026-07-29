@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -36,6 +36,7 @@ class DemoProviderAdmin:
     add_document: Callable[[dict[str, Any]], CatalogEntry]
     source_agent: str
     destination_agent: str
+    access_server_url: str
 
 
 def create_control_panel(
@@ -44,7 +45,7 @@ def create_control_panel(
     sentinel: SentinelRegistry,
     function_registry: MutableFunctionRegistry,
     register_function: Callable[[dict[str, Any]], LoadedFunction],
-    agents: Mapping[str, str],
+    agents: MutableMapping[str, str],
     derived_store: DerivedPayloadStore | None = None,
 ) -> Flask:
     """Build the demo-only UI and JSON adapter over reusable stores."""
@@ -165,7 +166,8 @@ def create_control_panel(
             "resource_issuer",
             "resource_jkt",
         }
-        if set(body) != required:
+        optional = {"role"}
+        if not required.issubset(body) or set(body) - required - optional:
             raise ValueError(
                 "binding requires source_agent, source_ps, "
                 "resource_issuer, and resource_jkt"
@@ -173,6 +175,9 @@ def create_control_panel(
         for key in required:
             if not isinstance(body[key], str) or not body[key]:
                 raise ValueError(f"{key} must be a non-empty string")
+        role = body.get("role")
+        if role is not None and (not isinstance(role, str) or not role):
+            raise ValueError("role must be a non-empty string when provided")
         source_agent = body["source_agent"]
         existing = sentinel.resource_bindings.get(source_agent)
         binding = ResourceBinding(
@@ -185,6 +190,13 @@ def create_control_panel(
                 f"source_agent already bound to a different resource: {source_agent}"
             )
         sentinel.resource_bindings[source_agent] = binding
+        if role is not None:
+            prior = agents.get(role)
+            if prior is not None and prior != source_agent:
+                raise ValueError(
+                    f"role already registered to a different agent: {role}"
+                )
+            agents[role] = source_agent
         return jsonify(
             {
                 "binding": {
@@ -192,7 +204,11 @@ def create_control_panel(
                     "source_ps": binding.source_ps,
                     "resource_issuer": binding.resource_issuer,
                     "resource_jkt": binding.resource_jkt,
-                }
+                },
+                "agents": [
+                    {"role": item_role, "agent_id": agent_id}
+                    for item_role, agent_id in agents.items()
+                ],
             }
         ), 201
 
@@ -340,14 +356,50 @@ def create_control_panel(
     @app.get("/api/providers/<provider_id>/documents")
     def list_documents(provider_id: str):
         item = provider(provider_id)
-        return jsonify(
+        documents = [
             {
-                "documents": [
-                    entry.public_dict(include_enabled=True)
-                    for entry in item.catalog.list(include_disabled=True)
-                ]
+                **entry.public_dict(include_enabled=True),
+                "kind": "hosted",
             }
-        )
+            for entry in item.catalog.list(include_disabled=True)
+        ]
+        hosted_ids = {document["edoc_id"] for document in documents}
+        for derived in sentinel.derived_documents.values():
+            if item.access_server_url not in derived.controllers:
+                continue
+            if derived.edoc_id in hosted_ids:
+                continue
+            published = False
+            if derived_store is not None:
+                try:
+                    published = bool(
+                        derived_store.read(derived.edoc_id).get("published")
+                    )
+                except LookupError:
+                    pass
+            producer = serialize_dataflow(derived.producer)
+            documents.append(
+                {
+                    "edoc_id": derived.edoc_id,
+                    "resource_uri": derived.resource_uri,
+                    "title": (
+                        f"Derived from {derived.producer.function}"
+                        f"({derived.producer.document})"
+                    ),
+                    "description": (
+                        f"Controlled by this AS; custodian "
+                        f"{derived.custodian}; "
+                        f"{'published' if published else 'unpublished'}"
+                    ),
+                    "enabled": True,
+                    "kind": "derived",
+                    "custodian": derived.custodian,
+                    "published": published,
+                    "controllers": list(derived.controllers),
+                    "producer": producer,
+                }
+            )
+        return jsonify({"documents": documents})
 
     @app.post("/api/providers/<provider_id>/documents")
     def add_document(provider_id: str):
@@ -452,10 +504,12 @@ body{font:15px system-ui;max-width:1100px;margin:32px auto;padding:0 20px;color:
 nav button{margin:0 8px 16px 0}.notice{background:#fff3cd;padding:12px;border-radius:6px}
 section{border:1px solid #ddd;border-radius:8px;padding:16px;margin-top:18px}
 table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:8px;border-bottom:1px solid #ddd}
-input,select,textarea,button{font:inherit;padding:7px}textarea{width:100%;min-height:90px;box-sizing:border-box}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.status{min-height:24px;color:#176b36}
+input,select,textarea,button{font:inherit;padding:7px;box-sizing:border-box}
+select{max-width:100%;width:100%}
+textarea{width:100%;min-height:90px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start}.status{min-height:24px;color:#176b36}
 .error{color:#a11}.policy{background:#f8f9fa;padding:12px;margin:10px 0;border-radius:6px}
-.policy label{display:flex;flex-direction:column;gap:4px}.policy .grid{margin-bottom:10px}
+.policy label{display:flex;flex-direction:column;gap:4px;min-width:0}.policy .grid{margin-bottom:10px}
 dialog{width:min(760px,90vw);border:1px solid #bbb;border-radius:8px;padding:20px}
 dialog::backdrop{background:#0008}
 </style>
@@ -473,6 +527,11 @@ const api=(path,options={})=>fetch(path,{headers:{'Content-Type':'application/js
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const documentLabel=document=>typeof document==='string'?document:
  `output of ${document.output_of.function}(${document.output_of.document}) → ${document.output_of.destination}`;
+const docOptionLabel=d=>{
+ if(d.kind!=='derived')return `${d.title} (${d.edoc_id})`;
+ let id=d.edoc_id.length>18?`${d.edoc_id.slice(0,14)}…`:d.edoc_id;
+ return `${d.producer?.function||'derived'} → ${id}${d.published?'':' · draft'}`;
+};
 function msg(text,error=false){let e=document.querySelector('#status');e.textContent=text;e.className=error?'status error':'status'}
 async function load(){
  const {providers}=await api('/api/providers');let nav=document.querySelector('#providers');nav.innerHTML='';
@@ -510,18 +569,30 @@ async function showSentinel(){
  <button onclick="addFunction()">Register function</button></section>`;
 }
 const options=(items,current,value,label)=>items.map(item=>`<option value="${esc(value(item))}" ${value(item)===current?'selected':''}>${esc(label(item))}</option>`).join('');
+function registeredAgentIds(state,p,target){
+ const roleById=Object.fromEntries((state.agents||[]).map(a=>[a.agent_id,a.role]));
+ const ids=[
+  ...(state.agents||[]).map(a=>a.agent_id),
+  ...(state.resource_bindings||[]).map(b=>b.source_agent),
+  p.source_agent,p.destination_agent,
+  target?.source,target?.destination,
+ ].filter(Boolean);
+ return [...new Set(ids)].sort().map(id=>({
+  agent_id:id,
+  label:roleById[id]?`${roleById[id]} — ${id}`:id,
+ }));
+}
 function policyForm(prefix,target,prerequisite,docs,state,p){
  target=target||{source:p.source_agent,function:state.functions[0]?.function_id||'',document:docs[0]?.edoc_id||'',
   destination:p.destination_agent,function_args:{}};
  let prerequisites=[...state.materialized];
- let sources=[...new Set([target.source,p.source_agent])];
- let destinations=[...new Set([target.destination,p.destination_agent])];
+ let agents=registeredAgentIds(state,p,target);
  if(prerequisite&&!prerequisites.some(f=>JSON.stringify(f)===JSON.stringify(prerequisite)))prerequisites.unshift(prerequisite);
  return `<div class="policy"><div class="grid">
- <label>Source<select id="${prefix}-source">${options(sources,target.source,v=>v,v=>v)}</select></label>
- <label>Document<select id="${prefix}-document">${options(docs,target.document,d=>d.edoc_id,d=>`${d.title} (${d.edoc_id})`)}</select></label>
+ <label>Source<select id="${prefix}-source">${options(agents,target.source,a=>a.agent_id,a=>a.label)}</select></label>
+ <label>Document<select id="${prefix}-document">${options(docs,target.document,d=>d.edoc_id,docOptionLabel)}</select></label>
  <label>Function<select id="${prefix}-function">${options(state.functions,target.function,f=>f.function_id,f=>`${f.function_id} — ${f.description}`)}</select></label>
- <label>Destination<select id="${prefix}-destination">${options(destinations,target.destination,v=>v,v=>v)}</select></label>
+ <label>Destination<select id="${prefix}-destination">${options(agents,target.destination,a=>a.agent_id,a=>a.label)}</select></label>
  </div><label>Exact function arguments (JSON)<textarea id="${prefix}-args">${esc(JSON.stringify(target.function_args,null,2))}</textarea></label>
  <label>Prerequisite<select id="${prefix}-prerequisite"><option value="">None</option>
  ${prerequisites.map(f=>{let value=encodeURIComponent(JSON.stringify(f));return `<option value="${value}" ${prerequisite&&JSON.stringify(f)===JSON.stringify(prerequisite)?'selected':''}>${esc(`${f.function} on ${f.document}`)}</option>`}).join('')}
@@ -540,13 +611,21 @@ async function show(p){
  selected=p;let [documents,policies,state]=await Promise.all([
  api(`/api/providers/${p.provider_id}/documents`),api(`/api/providers/${p.provider_id}/policies`),api('/api/sentinel')]);
  let docs=documents.documents;
+ let hosted=docs.filter(d=>d.kind!=='derived');
+ let derived=docs.filter(d=>d.kind==='derived');
  currentView={p,docs,policies,state};
  document.querySelector('#main').innerHTML=`<h2>${esc(p.display_name)}</h2>
  <section><h3>Files</h3><table><thead><tr><th>Title</th><th>ID</th><th>Enabled</th><th></th></tr></thead>
- <tbody>${docs.map(d=>`<tr><td>${esc(d.title)}</td><td>${esc(d.edoc_id)}</td><td>${d.enabled}</td>
+ <tbody>${hosted.map(d=>`<tr><td>${esc(d.title)}</td><td>${esc(d.edoc_id)}</td><td>${d.enabled}</td>
  <td><button onclick="toggleDoc('${esc(d.edoc_id)}',${!d.enabled})">${d.enabled?'Disable':'Enable'}</button></td></tr>`).join('')}</tbody></table>
  <h4>Add CSV file</h4><div class="grid"><input id="title" placeholder="Title"><input id="description" placeholder="Description"></div>
  <input id="csv-file" type="file" accept=".csv,text/csv"> <button onclick="addDoc()">Add file</button></section>
+ <section><h3>Controlled derived eDocs</h3>
+ <p>Outputs whose inherited controllers include ${esc(p.display_name)}'s Access Server. Hosted by the custodian agent, not this provider.</p>
+ ${derived.length?`<table><thead><tr><th>Title</th><th>ID</th><th>Custodian</th><th>Published</th></tr></thead>
+ <tbody>${derived.map(d=>`<tr><td>${esc(d.title)}</td><td><code>${esc(d.edoc_id)}</code></td>
+ <td><code>${esc(d.custodian)}</code></td><td>${d.published?'yes':'no'}</td></tr>`).join('')}</tbody></table>`:
+ '<p>No derived eDocs are under this Access Server yet.</p>'}</section>
  <section><h3>Available functions</h3><p>Functions come from the shared registry; invocation policy is specific to ${esc(p.display_name)}.</p>
  <table><thead><tr><th>Function ID</th><th>Description</th><th>SQL</th><th>${esc(p.display_name)} policy</th></tr></thead>
  <tbody>${state.functions.map(f=>{let count=policies.rules.filter(r=>r.target.function===f.function_id).length;

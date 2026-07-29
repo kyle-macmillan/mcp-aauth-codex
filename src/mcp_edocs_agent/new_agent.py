@@ -187,15 +187,19 @@ def _register_binding(
     source_ps: str,
     resource_issuer: str,
     resource_jkt: str,
+    role: str | None = None,
 ) -> None:
+    payload = {
+        "source_agent": source_agent,
+        "source_ps": source_ps,
+        "resource_issuer": resource_issuer,
+        "resource_jkt": resource_jkt,
+    }
+    if role is not None:
+        payload["role"] = role
     response = requests.post(
         f"{control_url}/api/sentinel/bindings",
-        json={
-            "source_agent": source_agent,
-            "source_ps": source_ps,
-            "resource_issuer": resource_issuer,
-            "resource_jkt": resource_jkt,
-        },
+        json=payload,
         timeout=5,
     )
     if response.status_code not in {200, 201}:
@@ -395,6 +399,7 @@ def main() -> None:
             source_ps=ps_url,
             resource_issuer=resource_url,
             resource_jkt=resource_key.thumbprint,
+            role=role,
         )
         append_provider(
             provider_path,

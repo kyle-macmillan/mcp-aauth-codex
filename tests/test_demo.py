@@ -644,14 +644,14 @@ async def test_live_policy_mutation_is_isolated_and_restartable(
             )
 
         assert restored_alice.is_error is False
-        assert len(alice_policy.list_rules()) == 2
+        assert len(alice_policy.list_rules()) == 3
     finally:
         if ps_service is not None:
             ps_service.stop()
         stack.stop()
 
     restarted = DemoStack(state_dir, _demo_urls())
-    assert len(restarted.policies["alice"].list_rules()) == 2
+    assert len(restarted.policies["alice"].list_rules()) == 3
 
 
 def test_demo_control_panel_manages_isolated_provider_state(tmp_path):
@@ -662,6 +662,7 @@ def test_demo_control_panel_manages_isolated_provider_state(tmp_path):
         page = requests.get(f"{root}/demo", timeout=2)
         assert page.status_code == 200
         assert "Available functions" in page.text
+        assert "Controlled derived eDocs" in page.text
         assert "No policy — invocation denied" in page.text
         assert "openPolicyEditor" in page.text
         assert "<summary>Edit policy</summary>" not in page.text
@@ -794,6 +795,49 @@ def test_demo_control_panel_manages_isolated_provider_state(tmp_path):
         assert sharing_rule.target.function_args == {}
         assert stack.policies["bob"].evaluate(sharing_rule.target) is None
 
+        materialize = requests.post(
+            f"{root}/api/sentinel/materializations",
+            json={
+                "producer": {
+                    "source": ALICE_SOURCE_AGENT,
+                    "function": "query_table@1",
+                    "document": "doc_01JDEMO7F3A",
+                    "destination": DESTINATION_AGENT,
+                    "function_args": {
+                        "statement": "SELECT 1",
+                        "parameters": [],
+                    },
+                },
+                "output": {
+                    "columns": ["n"],
+                    "rows": [{"n": 1}],
+                    "truncated": False,
+                },
+                "controllers": [stack.urls.alice_as],
+            },
+            timeout=2,
+        )
+        assert materialize.status_code == 201
+        derived_edoc_id = materialize.json()["derived_edoc_id"]
+        alice_with_derived = requests.get(
+            f"{root}/api/providers/alice/documents", timeout=2
+        ).json()["documents"]
+        bob_without_derived = requests.get(
+            f"{root}/api/providers/bob/documents", timeout=2
+        ).json()["documents"]
+        derived_docs = [
+            document
+            for document in alice_with_derived
+            if document.get("kind") == "derived"
+        ]
+        assert len(derived_docs) == 1
+        assert derived_docs[0]["edoc_id"] == derived_edoc_id
+        assert derived_docs[0]["published"] is False
+        assert derived_docs[0]["custodian"] == DESTINATION_AGENT
+        assert all(
+            document.get("kind") != "derived" for document in bob_without_derived
+        )
+
         created = requests.post(
             f"{root}/api/providers/alice/documents",
             json={
@@ -813,7 +857,12 @@ def test_demo_control_panel_manages_isolated_provider_state(tmp_path):
         bob_documents = requests.get(
             f"{root}/api/providers/bob/documents", timeout=2
         ).json()["documents"]
-        assert len(alice_documents) == 2
+        assert len(
+            [document for document in alice_documents if document.get("kind") != "derived"]
+        ) == 2
+        assert any(
+            document["edoc_id"] == derived_edoc_id for document in alice_documents
+        )
         assert len(bob_documents) == 1
         added_id = created.json()["document"]["edoc_id"]
         renamed = requests.patch(
@@ -854,7 +903,7 @@ def test_demo_control_panel_manages_isolated_provider_state(tmp_path):
         )
         assert replaced.status_code == 200
         assert replaced.json()["rule"]["rule_id"] == rule_id
-        assert len(stack.policies["alice"].list_rules()) == 3
+        assert len(stack.policies["alice"].list_rules()) == 4
         assert len(stack.policies["bob"].list_rules()) == 1
         assert requests.delete(
             f"{root}/api/providers/alice/policies/{rule_id}", timeout=2
