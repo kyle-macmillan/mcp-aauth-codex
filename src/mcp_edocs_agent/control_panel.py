@@ -139,12 +139,12 @@ def create_control_panel(
                     {
                         "edoc_id": derived.edoc_id,
                         "resource_uri": derived.resource_uri,
-                        "producer": serialize_dataflow(derived.producer),
-                        "producer_fingerprint": (
-                            derived.producer_fingerprint
+                        "dataflow": serialize_dataflow(derived.dataflow),
+                        "dataflow_fingerprint": (
+                            derived.dataflow_fingerprint
                         ),
                         "output_digest": derived.output_digest,
-                        "custodian": derived.custodian,
+                        "possessor": derived.possessor,
                         "controllers": list(derived.controllers),
                         "published": derived.edoc_id
                         in sentinel.published_derived,
@@ -208,21 +208,21 @@ def create_control_panel(
                 continue
             if derived.edoc_id in hosted_ids:
                 continue
-            producer = serialize_dataflow(derived.producer)
+            dataflow = serialize_dataflow(derived.dataflow)
             documents.append(
                 {
                     "edoc_id": derived.edoc_id,
                     "resource_uri": derived.resource_uri,
                     "title": f"Derived {derived.edoc_id}",
                     "description": (
-                        f"Output of {derived.producer.function} "
-                        f"for {derived.custodian}"
+                        f"Output of {derived.dataflow.function} "
+                        f"for {derived.possessor}"
                     ),
                     "enabled": True,
                     "kind": "derived",
                     "published": derived.edoc_id in sentinel.published_derived,
-                    "producer": producer,
-                    "custodian": derived.custodian,
+                    "dataflow": dataflow,
+                    "possessor": derived.possessor,
                     "controllers": list(derived.controllers),
                 }
             )
@@ -357,7 +357,7 @@ const documentLabel=document=>typeof document==='string'?document:
 const docOptionLabel=d=>{
  if(d.kind!=='derived')return `${d.title} (${d.edoc_id})`;
  let id=d.edoc_id.length>18?`${d.edoc_id.slice(0,14)}…`:d.edoc_id;
- return `${d.producer?.function||'derived'} → ${id}${d.published?'':' · draft'}`;
+ return `${d.dataflow?.function||'derived'} → ${id}${d.published?'':' · draft'}`;
 };
 function msg(text,error=false){let e=document.querySelector('#status');e.textContent=text;e.className=error?'status error':'status'}
 async function load(){
@@ -377,10 +377,10 @@ async function showSentinel(){
  <td>${esc(f.destination)}</td><td><code>${esc(JSON.stringify(f.function_args))}</code></td></tr>`).join('')}</tbody></table>`:
  '<p>No dataflows have materialized yet.</p>'}</section>
  <section><h3>Derived eDocs</h3>${state.derived_documents.length?
- `<table><thead><tr><th>eDoc</th><th>Producer</th><th>Custodian</th><th>Output digest</th></tr></thead>
+ `<table><thead><tr><th>eDoc</th><th>Dataflow</th><th>Possessor</th><th>Output digest</th></tr></thead>
  <tbody>${state.derived_documents.map(d=>`<tr><td><code>${esc(d.resource_uri)}</code></td>
- <td>${esc(`${d.producer.source} → ${d.producer.function}(${d.producer.document}) → ${d.producer.destination}`)}</td>
- <td>${esc(d.custodian)}</td><td><code>${esc(d.output_digest)}</code></td></tr>`).join('')}</tbody></table>`:
+ <td>${esc(`${d.dataflow.source} → ${d.dataflow.function}(${d.dataflow.document}) → ${d.dataflow.destination}`)}</td>
+ <td>${esc(d.possessor)}</td><td><code>${esc(d.output_digest)}</code></td></tr>`).join('')}</tbody></table>`:
  '<p>No derived eDocs have been registered yet.</p>'}</section>
  <section><h3>Authoritative controllers</h3><pre>${esc(JSON.stringify(state.controllers,null,2))}</pre></section>
  <section><h3>Resource bindings</h3><pre>${esc(JSON.stringify(state.resource_bindings,null,2))}</pre></section>
@@ -448,10 +448,10 @@ async function show(p){
  <h4>Add CSV file</h4><div class="grid"><input id="title" placeholder="Title"><input id="description" placeholder="Description"></div>
  <input id="csv-file" type="file" accept=".csv,text/csv"> <button onclick="addDoc()">Add file</button></section>
  <section><h3>Controlled derived eDocs</h3>
- <p>Outputs whose inherited controllers include ${esc(p.display_name)}'s Access Server. Hosted by the custodian agent, not this provider.</p>
- ${derived.length?`<table><thead><tr><th>Title</th><th>ID</th><th>Custodian</th><th>Published</th></tr></thead>
+ <p>Outputs whose inherited controllers include ${esc(p.display_name)}'s Access Server. Hosted by the possessor agent, not this provider.</p>
+ ${derived.length?`<table><thead><tr><th>Title</th><th>ID</th><th>Possessor</th><th>Published</th></tr></thead>
  <tbody>${derived.map(d=>`<tr><td>${esc(d.title)}</td><td><code>${esc(d.edoc_id)}</code></td>
- <td><code>${esc(d.custodian)}</code></td><td>${d.published?'yes':'no'}</td></tr>`).join('')}</tbody></table>`:
+ <td><code>${esc(d.possessor)}</code></td><td>${d.published?'yes':'no'}</td></tr>`).join('')}</tbody></table>`:
  '<p>No derived eDocs are under this Access Server yet.</p>'}</section>
  <section><h3>Available functions</h3><p>Functions come from the shared registry; invocation policy is specific to ${esc(p.display_name)}.</p>
  <table><thead><tr><th>Function ID</th><th>Description</th><th>SQL</th><th>${esc(p.display_name)} policy</th></tr></thead>

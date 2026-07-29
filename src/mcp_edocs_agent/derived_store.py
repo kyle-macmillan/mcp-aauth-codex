@@ -36,10 +36,10 @@ class DerivedPayloadStore:
         payload = {
             "edoc_id": derived.edoc_id,
             "resource_uri": derived.resource_uri,
-            "producer": serialize_dataflow(derived.producer),
-            "producer_fingerprint": derived.producer_fingerprint,
+            "dataflow": serialize_dataflow(derived.dataflow),
+            "dataflow_fingerprint": derived.dataflow_fingerprint,
             "output_digest": derived.output_digest,
-            "custodian": derived.custodian,
+            "possessor": derived.possessor,
             "controllers": list(derived.controllers),
             "output": output,
             "published": False,

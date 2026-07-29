@@ -316,7 +316,7 @@ class EdocsGateway:
         title: str | None = None,
         description: str | None = None,
     ) -> dict[str, Any]:
-        """Expose one custodian-owned derived eDoc on this agent's resource server."""
+        """Expose one possessor-owned derived eDoc on this agent's resource server."""
         if not self.config.sentinel_url:
             raise RuntimeError("sentinel URL is not configured")
         if not self.config.agent_resource_url:
@@ -341,9 +341,9 @@ class EdocsGateway:
                     else "derived eDoc lookup failed"
                 )
                 raise ValueError(detail or "derived eDoc lookup failed")
-            if derived_body.get("custodian") != self.config.agent_id:
+            if derived_body.get("possessor") != self.config.agent_id:
                 raise PermissionError(
-                    "only the custodian agent may publish this derived eDoc"
+                    "only the possessor agent may publish this derived eDoc"
                 )
             if derived_body.get("published"):
                 raise ValueError("derived eDoc is already published")
@@ -353,7 +353,7 @@ class EdocsGateway:
                 raise RuntimeError("derived eDoc payload is invalid")
             publish_title = title or f"Published {derived_edoc_id}"
             publish_description = description or (
-                "Derived eDoc published by its custodian agent"
+                "Derived eDoc published by its possessor agent"
             )
             catalog_response = await client.post(
                 f"{self.config.agent_resource_url}/admin/documents",

@@ -437,7 +437,7 @@ async def test_live_demo_stack_runs_complete_flow(monkeypatch, tmp_path):
         }
         assert len(stack.registry.derived_documents) == 3
         assert {
-            derived.producer.source
+            derived.dataflow.source
             for derived in stack.registry.derived_documents.values()
         } == {
             ALICE_SOURCE_AGENT,
@@ -445,7 +445,7 @@ async def test_live_demo_stack_runs_complete_flow(monkeypatch, tmp_path):
             CAROL_SOURCE_AGENT,
         }
         assert all(
-            derived.custodian == DESTINATION_AGENT
+            derived.possessor == DESTINATION_AGENT
             and derived.output_digest.startswith("sha256:")
             for derived in stack.registry.derived_documents.values()
         )
@@ -456,7 +456,7 @@ async def test_live_demo_stack_runs_complete_flow(monkeypatch, tmp_path):
         alice_derived = next(
             derived
             for derived in stack.registry.derived_documents.values()
-            if derived.producer.source == ALICE_SOURCE_AGENT
+            if derived.dataflow.source == ALICE_SOURCE_AGENT
         )
         share_with_carol = Dataflow.from_arguments(
             DESTINATION_AGENT,
@@ -791,7 +791,7 @@ def test_demo_control_panel_manages_isolated_provider_state(tmp_path):
         sharing_rule = stack.policies["alice"].list_rules()[1]
         assert sharing_rule.target.source == DESTINATION_AGENT
         assert sharing_rule.target.function == "identity@1"
-        assert sharing_rule.target.document.producer == (
+        assert sharing_rule.target.document.dataflow == (
             stack.policies["alice"].list_rules()[0].target
         )
         assert sharing_rule.target.destination == CAROL_RECIPIENT_AGENT
@@ -801,7 +801,7 @@ def test_demo_control_panel_manages_isolated_provider_state(tmp_path):
         materialize = requests.post(
             f"{stack.urls.sentinel}/registry/materializations",
             json={
-                "producer": {
+                "dataflow": {
                     "source": ALICE_SOURCE_AGENT,
                     "function": "query_table@1",
                     "document": "doc_01JDEMO7F3A",
@@ -836,7 +836,7 @@ def test_demo_control_panel_manages_isolated_provider_state(tmp_path):
         assert len(derived_docs) == 1
         assert derived_docs[0]["edoc_id"] == derived_edoc_id
         assert derived_docs[0]["published"] is False
-        assert derived_docs[0]["custodian"] == DESTINATION_AGENT
+        assert derived_docs[0]["possessor"] == DESTINATION_AGENT
         assert all(
             document.get("kind") != "derived" for document in bob_without_derived
         )

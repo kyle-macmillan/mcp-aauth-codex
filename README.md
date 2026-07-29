@@ -207,17 +207,17 @@ before demonstrating the rejected call.
 
 Alice also starts with a future-output policy. Before any query result exists,
 it permits `identity@1` from Producer to Carol over any derived eDoc whose
-trusted producer is Alice's exact seeded `query_table@1` dataflow. It does not
+trusted dataflow is Alice's exact seeded `query_table@1` dataflow. It does not
 permit the equivalent Bob destination. The policy stores an
-`OutputOf(producer)` selector rather than guessing a future eDoc ID.
+`OutputOf(dataflow)` selector rather than guessing a future eDoc ID.
 
 Issuing authorization no longer marks a dataflow as materialized. After a
 provider function completes successfully, the provider records a derived eDoc
-with a unique opaque ID, the exact producer dataflow, output digest, Producer as
-custodian, and inherited controllers. The Sentinel dashboard shows these
+with a unique opaque ID, the exact dataflow, output digest, Producer as
+possessor, and inherited controllers. The Sentinel dashboard shows these
 derived eDocs and their provenance. Alice's future-output rule begins matching
 the concrete derived ID only after this registration. The derived eDoc is not
-discoverable to peers until the custodian agent publishes it with
+discoverable to peers until the possessor agent publishes it with
 `publish_derived_edoc`, which catalogs it on that agent's resource server and
 registers the inherited controllers with the Sentinel registry API.
 

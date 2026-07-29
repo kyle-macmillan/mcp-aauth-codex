@@ -323,7 +323,7 @@ async def test_explicit_publish_allows_carol_denies_bob(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_publish_rejects_non_custodian(monkeypatch, tmp_path):
+async def test_publish_rejects_non_possessor(monkeypatch, tmp_path):
     state_dir = tmp_path / "publish-deny-state"
     stack = DemoStack(state_dir, _demo_urls())
     services: list = []
@@ -351,7 +351,7 @@ async def test_publish_rejects_non_custodian(monkeypatch, tmp_path):
         materialize = requests.post(
             f"{stack.urls.sentinel}/registry/materializations",
             json={
-                "producer": {
+                "dataflow": {
                     "source": "aauth:source@alice.demo.local",
                     "function": "query_table@1",
                     "document": "doc_01JDEMO7F3A",
@@ -379,7 +379,7 @@ async def test_publish_rejects_non_custodian(monkeypatch, tmp_path):
                 {"derived_edoc_id": derived_edoc_id},
             )
             assert denied.is_error is True
-            assert "custodian" in denied.content[0].text.lower()
+            assert "possessor" in denied.content[0].text.lower()
     finally:
         for service in reversed(services):
             service.stop()

@@ -253,7 +253,7 @@ def _build_agent_resource_server(
             )
 
     def on_materialized(
-        producer: Dataflow,
+        dataflow: Dataflow,
         output: dict[str, Any],
         controllers: tuple[str, ...],
     ):
@@ -262,7 +262,7 @@ def _build_agent_resource_server(
         response = requests.post(
             f"{sentinel_url}/registry/materializations",
             json={
-                "producer": serialize_dataflow(producer),
+                "dataflow": serialize_dataflow(dataflow),
                 "output": output,
                 "controllers": list(controllers),
             },

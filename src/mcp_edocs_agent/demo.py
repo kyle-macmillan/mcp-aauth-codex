@@ -582,14 +582,14 @@ class DemoStack:
 
     def _record_materialization(
         self,
-        producer: Dataflow,
+        dataflow: Dataflow,
         output: dict[str, Any],
         controllers: tuple[str, ...],
     ):
         assert self.registry is not None
         derived = register_materialization(
             self.registry,
-            producer=producer,
+            dataflow=dataflow,
             output=output,
             controllers=controllers,
         )
