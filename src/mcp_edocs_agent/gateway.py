@@ -315,6 +315,8 @@ class EdocsGateway:
         *,
         title: str | None = None,
         description: str | None = None,
+        function_id: str | None = None,
+        function_args: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Expose one possessor-owned derived eDoc on this agent's resource server."""
         if not self.config.sentinel_url:
@@ -323,42 +325,85 @@ class EdocsGateway:
             raise RuntimeError("agent resource URL is not configured")
         if not self.config.agent_id:
             raise RuntimeError("agent id is not configured")
+        if function_id is None and function_args is not None:
+            raise ValueError("function_args requires function_id")
         sentinel = self.config.sentinel_url.rstrip("/")
         options = {"follow_redirects": False}
         if self.http_transport is not None:
             options["transport"] = self.http_transport
         async with httpx2.AsyncClient(**options) as client:
-            derived_response = await client.get(
-                f"{sentinel}/registry/derived/{derived_edoc_id}"
-            )
-            if derived_response.status_code == 404:
-                raise LookupError(f"unknown derived eDoc: {derived_edoc_id}")
-            derived_body = derived_response.json()
-            if derived_response.status_code != 200:
-                detail = (
-                    derived_body.get("detail")
-                    if isinstance(derived_body, dict)
-                    else "derived eDoc lookup failed"
+            publish_id = derived_edoc_id
+            if function_id is not None:
+                transform_response = await client.post(
+                    f"{sentinel}/registry/derived/{derived_edoc_id}/transform",
+                    json={
+                        "possessor": self.config.agent_id,
+                        "function_id": function_id,
+                        "function_args": function_args or {},
+                    },
                 )
-                raise ValueError(detail or "derived eDoc lookup failed")
-            if derived_body.get("possessor") != self.config.agent_id:
-                raise PermissionError(
-                    "only the possessor agent may publish this derived eDoc"
+                transform_body = transform_response.json()
+                if transform_response.status_code == 404:
+                    detail = (
+                        transform_body.get("detail")
+                        if isinstance(transform_body, dict)
+                        else "transform failed"
+                    )
+                    raise LookupError(detail or "transform failed")
+                if transform_response.status_code == 403:
+                    detail = (
+                        transform_body.get("detail")
+                        if isinstance(transform_body, dict)
+                        else "transform forbidden"
+                    )
+                    raise PermissionError(detail or "transform forbidden")
+                if transform_response.status_code != 201:
+                    detail = (
+                        transform_body.get("detail")
+                        if isinstance(transform_body, dict)
+                        else "transform failed"
+                    )
+                    raise ValueError(detail or "transform failed")
+                publish_id = transform_body["derived_edoc_id"]
+                controllers = transform_body["controllers"]
+                output = transform_body["output"]
+            else:
+                derived_response = await client.get(
+                    f"{sentinel}/registry/derived/{derived_edoc_id}"
                 )
-            if derived_body.get("published"):
-                raise ValueError("derived eDoc is already published")
-            controllers = derived_body["controllers"]
-            output = derived_body["output"]
+                if derived_response.status_code == 404:
+                    raise LookupError(f"unknown derived eDoc: {derived_edoc_id}")
+                derived_body = derived_response.json()
+                if derived_response.status_code != 200:
+                    detail = (
+                        derived_body.get("detail")
+                        if isinstance(derived_body, dict)
+                        else "derived eDoc lookup failed"
+                    )
+                    raise ValueError(detail or "derived eDoc lookup failed")
+                if derived_body.get("possessor") != self.config.agent_id:
+                    raise PermissionError(
+                        "only the possessor agent may publish this derived eDoc"
+                    )
+                if derived_body.get("published"):
+                    raise ValueError("derived eDoc is already published")
+                controllers = derived_body["controllers"]
+                output = derived_body["output"]
             if not isinstance(output, dict):
                 raise RuntimeError("derived eDoc payload is invalid")
-            publish_title = title or f"Published {derived_edoc_id}"
+            publish_title = title or f"Published {publish_id}"
             publish_description = description or (
                 "Derived eDoc published by its possessor agent"
+                if function_id is None
+                else (
+                    "Locally transformed derived eDoc published by its "
+                    "possessor agent"
+                )
             )
             catalog_response = await client.post(
                 f"{self.config.agent_resource_url}/admin/documents",
                 json={
-                    "edoc_id": derived_edoc_id,
+                    "edoc_id": publish_id,
                     "title": publish_title,
                     "description": publish_description,
                     "storage": output,
@@ -377,7 +422,7 @@ class EdocsGateway:
                 f"{sentinel}/registry/controllers",
                 json={
                     "resource_issuer": self.config.agent_resource_url,
-                    "edoc_id": derived_edoc_id,
+                    "edoc_id": publish_id,
                     "controllers": controllers,
                 },
             )
@@ -402,10 +447,12 @@ class EdocsGateway:
             else None
         )
         return {
-            "derived_edoc_id": derived_edoc_id,
+            "derived_edoc_id": publish_id,
             "provider_id": provider_id,
             "resource_uri": resource_uri,
             "controllers": controllers,
+            "transformed_from": derived_edoc_id if function_id is not None else None,
+            "function_id": function_id,
         }
 
 

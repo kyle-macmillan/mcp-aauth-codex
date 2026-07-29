@@ -62,6 +62,7 @@ from .derived_store import DerivedPayloadStore
 from .functions import (
     DEMO_FUNCTION_SQL,
     IDENTITY_FUNCTION_ID,
+    execute_on_derived_output,
     local_demo_function_registrations,
     sql_function_registration,
 )
@@ -368,6 +369,7 @@ class DemoStack:
             key=keys["sentinel"],
             transport=transport,
             on_function_register=self._function_registrar(),
+            execute_function=self._function_executor(),
         )
         resolver = _static_and_remote_resolver(
             {
@@ -634,6 +636,23 @@ class DemoStack:
             return registration
 
         return register
+
+    def _function_executor(self):
+        def execute(
+            function_id: str,
+            output: dict[str, Any],
+            function_args: dict[str, Any],
+        ) -> dict[str, Any]:
+            registration = self.function_registry.get(function_id)
+            if registration is None:
+                raise LookupError(f"function is not loaded: {function_id}")
+            return execute_on_derived_output(
+                registration,
+                output,
+                function_args,
+            )
+
+        return execute
 
     def _document_adder(
         self,

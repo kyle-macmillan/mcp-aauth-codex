@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
+import tempfile
 from collections.abc import Mapping
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, Iterator
 
 import duckdb
 from aauth_edocs import FunctionDescriptor
@@ -74,6 +78,64 @@ def query_table(
         ],
         "truncated": truncated,
     }
+
+
+@contextmanager
+def temporary_document_from_output(output: dict[str, Any]) -> Iterator[Any]:
+    """Yield a document object usable by identity and SQL demo functions."""
+    columns = output.get("columns")
+    rows = output.get("rows")
+    if not isinstance(columns, list) or not isinstance(rows, list):
+        yield SimpleNamespace(storage=output)
+        return
+    if any(not isinstance(column, str) or not column for column in columns):
+        raise ValueError("derived output columns must be non-empty strings")
+    if len(set(columns)) != len(columns):
+        raise ValueError("derived output columns must be unique")
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("derived output rows must be objects")
+    with tempfile.TemporaryDirectory(prefix="edocs-transform-") as temp_dir:
+        database_path = Path(temp_dir) / "document.duckdb"
+        connection = duckdb.connect(str(database_path))
+        try:
+            if rows:
+                json_path = Path(temp_dir) / "rows.json"
+                ordered_rows = [
+                    {column: row.get(column) for column in columns}
+                    for row in rows
+                ]
+                json_path.write_text(
+                    json.dumps(ordered_rows),
+                    encoding="utf-8",
+                )
+                connection.execute(
+                    "CREATE TABLE document AS SELECT * FROM read_json_auto(?)",
+                    [str(json_path)],
+                )
+            else:
+                column_sql = ", ".join(
+                    f'"{column}" VARCHAR' for column in columns
+                )
+                connection.execute(f"CREATE TABLE document ({column_sql})")
+        finally:
+            connection.close()
+        yield SimpleNamespace(
+            storage=output,
+            database_path=str(database_path),
+            edoc_id="derived_transform",
+        )
+
+
+def execute_on_derived_output(
+    registration: LoadedFunction,
+    output: dict[str, Any],
+    arguments: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run one registered function against a derived eDoc JSON payload."""
+    args = {} if arguments is None else dict(arguments)
+    with temporary_document_from_output(output) as document:
+        return registration.implementation(document, args)
 
 
 def _identity_implementation(

@@ -7,7 +7,7 @@ import socket
 
 import pytest
 import requests
-from aauth_edocs import SigningKey, issue_agent_token
+from aauth_edocs import Dataflow, OutputOf, SigningKey, issue_agent_token
 from aauth_edocs.agent import RequestsTransport
 from aauth_edocs.ps import create_ps
 from mcp import Client
@@ -24,6 +24,7 @@ from mcp_aauth_codex.demo import (
     FlaskService,
 )
 from mcp_aauth_codex.proxy import build_server
+from mcp_edocs_agent.functions import IDENTITY_FUNCTION_ID
 from mcp_edocs_agent.new_agent import (
     _build_agent_resource_server,
     _register_binding,
@@ -380,6 +381,193 @@ async def test_publish_rejects_non_possessor(monkeypatch, tmp_path):
             )
             assert denied.is_error is True
             assert "possessor" in denied.content[0].text.lower()
+    finally:
+        for service in reversed(services):
+            service.stop()
+        stack.stop()
+
+
+@pytest.mark.asyncio
+async def test_publish_with_transform_allows_carol_on_output_of(monkeypatch, tmp_path):
+    state_dir = tmp_path / "publish-transform-state"
+    stack = DemoStack(state_dir, _demo_urls())
+    services: list = []
+    try:
+        stack.start()
+        producer_ps, producer_rs, producer_resource = _start_agent_with_resource(
+            state_dir,
+            stack.urls,
+            role="producer",
+            agent_id=DESTINATION_AGENT,
+            person="alice",
+            display_name="Producer",
+        )
+        services.extend([producer_ps, producer_rs])
+        carol_ps, carol_rs, _ = _start_agent_with_resource(
+            state_dir,
+            stack.urls,
+            role="carol",
+            agent_id=CAROL_RECIPIENT_AGENT,
+            person="carol",
+            display_name="Carol",
+        )
+        services.extend([carol_ps, carol_rs])
+        bob_ps, bob_rs, _ = _start_agent_with_resource(
+            state_dir,
+            stack.urls,
+            role="bob",
+            agent_id=BOB_RECIPIENT_AGENT,
+            person="bob",
+            display_name="Bob",
+        )
+        services.extend([bob_ps, bob_rs])
+
+        async def approve(_context, _params):
+            return ElicitResult(action="accept", content={"approve": True})
+
+        for line in (state_dir / "agents" / "producer.env").read_text().splitlines():
+            name, value = line.split("=", 1)
+            monkeypatch.setenv(name, value)
+        producer_proxy = build_server(ProxyConfig.from_env())
+
+        async with Client(
+            producer_proxy,
+            mode="legacy",
+            elicitation_callback=approve,
+        ) as client:
+            providers = await client.call_tool("list_providers", {})
+            provider_refs = {
+                item["provider_id"]: item["provider_ref"]
+                for item in _payload(providers)["providers"]
+            }
+            alice_resources = await client.call_tool(
+                "list_resources",
+                {"provider_ref": provider_refs["alice"]},
+            )
+            alice_ref = _payload(alice_resources)["resources"][0]["resource_ref"]
+            invoked = await client.call_tool(
+                "invoke_edocs_function",
+                {
+                    "resource_ref": alice_ref,
+                    "function_id": "query_table@1",
+                    "arguments": {
+                        "statement": (
+                            "SELECT name, department FROM document "
+                            "WHERE department = ? ORDER BY name"
+                        ),
+                        "parameters": ["engineering"],
+                    },
+                },
+            )
+            assert invoked.is_error is False
+            input_derived_id = _payload(invoked)["structured_content"][
+                "derived_edoc_id"
+            ]
+
+            published = await client.call_tool(
+                "publish_derived_edoc",
+                {
+                    "derived_edoc_id": input_derived_id,
+                    "function_id": "employee_count@1",
+                    "function_args": {},
+                },
+            )
+            assert published.is_error is False
+            publish_payload = _payload(published)
+            transformed_id = publish_payload["derived_edoc_id"]
+            assert transformed_id != input_derived_id
+            assert publish_payload["transformed_from"] == input_derived_id
+            assert publish_payload["function_id"] == "employee_count@1"
+            assert publish_payload["controllers"] == [stack.urls.alice_as]
+
+            listed = await client.call_tool(
+                "list_resources",
+                {"provider_ref": provider_refs["producer"]},
+            )
+            resources = _payload(listed)["resources"]
+            assert len(resources) == 1
+            assert resources[0]["uri"] == f"edoc://producer/{transformed_id}"
+
+        transformed = stack.registry.derived_documents[transformed_id]
+        assert transformed.dataflow.source == DESTINATION_AGENT
+        assert transformed.dataflow.destination == DESTINATION_AGENT
+        assert transformed.dataflow.function == "employee_count@1"
+        assert transformed.dataflow.document == input_derived_id
+        assert input_derived_id not in stack.registry.published_derived
+        assert transformed_id in stack.registry.published_derived
+        assert stack.registry.controllers[
+            (producer_resource, transformed_id)
+        ] == (stack.urls.alice_as,)
+
+        stack.policies["alice"].create_rule(
+            Dataflow.from_arguments(
+                DESTINATION_AGENT,
+                IDENTITY_FUNCTION_ID,
+                OutputOf(transformed.dataflow),
+                CAROL_RECIPIENT_AGENT,
+                {},
+            )
+        )
+
+        for line in (state_dir / "agents" / "carol.env").read_text().splitlines():
+            name, value = line.split("=", 1)
+            monkeypatch.setenv(name, value)
+        carol_proxy = build_server(ProxyConfig.from_env())
+        async with Client(
+            carol_proxy,
+            mode="legacy",
+            elicitation_callback=approve,
+        ) as client:
+            providers = await client.call_tool("list_providers", {})
+            provider_refs = {
+                item["provider_id"]: item["provider_ref"]
+                for item in _payload(providers)["providers"]
+            }
+            resources = await client.call_tool(
+                "list_resources",
+                {"provider_ref": provider_refs["producer"]},
+            )
+            resource_ref = _payload(resources)["resources"][0]["resource_ref"]
+            allowed = await client.call_tool(
+                "invoke_edocs_function",
+                {
+                    "resource_ref": resource_ref,
+                    "function_id": IDENTITY_FUNCTION_ID,
+                    "arguments": {},
+                },
+            )
+            assert allowed.is_error is False
+            shared = _payload(allowed)["structured_content"]
+            assert shared["rows"] == [{"employee_count": 2}]
+
+        for line in (state_dir / "agents" / "bob.env").read_text().splitlines():
+            name, value = line.split("=", 1)
+            monkeypatch.setenv(name, value)
+        bob_proxy = build_server(ProxyConfig.from_env())
+        async with Client(
+            bob_proxy,
+            mode="legacy",
+            elicitation_callback=approve,
+        ) as client:
+            providers = await client.call_tool("list_providers", {})
+            provider_refs = {
+                item["provider_id"]: item["provider_ref"]
+                for item in _payload(providers)["providers"]
+            }
+            resources = await client.call_tool(
+                "list_resources",
+                {"provider_ref": provider_refs["producer"]},
+            )
+            resource_ref = _payload(resources)["resources"][0]["resource_ref"]
+            denied = await client.call_tool(
+                "invoke_edocs_function",
+                {
+                    "resource_ref": resource_ref,
+                    "function_id": IDENTITY_FUNCTION_ID,
+                    "arguments": {},
+                },
+            )
+            assert denied.is_error is True
     finally:
         for service in reversed(services):
             service.stop()

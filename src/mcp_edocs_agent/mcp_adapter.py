@@ -201,11 +201,37 @@ def build_server(
 
         @server.tool(
             description=(
-                "Publish a derived eDoc this agent obtained from a prior "
-                "successful invoke_edocs_function. Pass the derived_edoc_id "
-                "from that result. Publishing makes the resource discoverable "
-                "and invocable by peers through Sentinel; it does not create "
-                "policy."
+                "Publish a derived eDoc obtained from a prior successful "
+                "invoke_edocs_function call. Pass the derived_edoc_id from "
+                "that result.\n"
+                "\n"
+                "Workflow:\n"
+                "1. Obtain a derived_edoc_id by invoking an allowed function "
+                "against a resource you have invoke access to (e.g., "
+                "query_table@1 against the source eDoc).\n"
+                "2. Optionally pass function_id + function_args to apply one "
+                "additional registered transform to that derived data before "
+                "publishing. This transform is executed by Sentinel/the "
+                "publishing agent directly — it does NOT go through "
+                "invoke_edocs_function, and therefore does NOT require an "
+                "invoke policy authorizing that function against that "
+                "resource. It only requires that the function be registered "
+                "(via register_edocs_function) and that you already "
+                "legitimately hold the input derived_edoc_id.\n"
+                "3. The transformed output is published as a new "
+                "derived_edoc_id, with transformed_from and function_id "
+                "recorded in the result for provenance/audit.\n"
+                "\n"
+                "Note: this is a one-shot, one-hop transform — you cannot "
+                "chain a second transform onto an already-published derived "
+                "eDoc (publishing an id twice errors \"already published\"). "
+                "To apply a further transform, start again from a fresh "
+                "invoke_edocs_function call to get a new derived_edoc_id.\n"
+                "\n"
+                "Publishing makes the resource discoverable by peers through "
+                "Sentinel; unless a controller creates an invoke policy for "
+                "it, it is not itself invocable and its data is not "
+                "accessible to others."
             ),
             annotations=ADDITIVE,
         )
@@ -213,11 +239,15 @@ def build_server(
             derived_edoc_id: str,
             title: str | None = None,
             description: str | None = None,
+            function_id: str | None = None,
+            function_args: dict[str, Any] | None = None,
         ) -> dict[str, Any]:
             return await gateway.publish_derived_edoc(
                 derived_edoc_id,
                 title=title,
                 description=description,
+                function_id=function_id,
+                function_args=function_args,
             )
 
     if config.function_registry_url:

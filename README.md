@@ -26,7 +26,8 @@ The plugin provides `list_providers()`,
 `list_resources(provider_ref)`, and
 `list_edocs_functions()`, plus
 `invoke_edocs_function(resource_ref, function_id, arguments)` and
-`publish_derived_edoc(derived_edoc_id)` when the agent hosts a resource server.
+`publish_derived_edoc(derived_edoc_id, function_id?, function_args?)` when the
+agent hosts a resource server.
 Provider listing comes from the bridge's directory, while resource listing is
 forwarded live to the selected provider's MCP server without starting a
 consent flow. Provider and resource references are opaque and scoped to the
@@ -219,7 +220,12 @@ derived eDocs and their provenance. Alice's future-output rule begins matching
 the concrete derived ID only after this registration. The derived eDoc is not
 discoverable to peers until the possessor agent publishes it with
 `publish_derived_edoc`, which catalogs it on that agent's resource server and
-registers the inherited controllers with the Sentinel registry API.
+registers the inherited controllers with the Sentinel registry API. Optionally
+pass `function_id` and `function_args` to apply one already-registered function
+locally before publish: Sentinel records a source=destination dataflow, mints a
+new derived eDoc with the transformed payload and inherited controllers, and
+that new id is what gets published. Controllers still govern the result;
+publishing does not create policy.
 
 In either coding agent, ask:
 
