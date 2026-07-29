@@ -88,6 +88,8 @@ def _mint_agent(
         person=person,
         agent_key=agent_key,
         agent_token=agent_token,
+        resource_url=_free_url(),
+        control_url=urls.control,
     )
     service = FlaskService(ps, int(urls.ps.rsplit(":", 1)[-1]))
     service.start()
@@ -397,6 +399,9 @@ async def test_live_demo_stack_runs_complete_flow(monkeypatch, tmp_path):
             {"name": "Avery", "department": "engineering"},
             {"name": "Casey", "department": "engineering"},
         ]
+        assert payload["structured_content"]["derived_edoc_id"].startswith(
+            "derived_"
+        )
         assert bob_result.is_error is False
         bob_payload = json.loads(bob_result.content[0].text)
         assert bob_payload["structured_content"]["rows"] == [
@@ -444,6 +449,10 @@ async def test_live_demo_stack_runs_complete_flow(monkeypatch, tmp_path):
             and derived.output_digest.startswith("sha256:")
             for derived in stack.registry.derived_documents.values()
         )
+        assert all(
+            (stack.derived_store.root / f"{derived.edoc_id}.json").exists()
+            for derived in stack.registry.derived_documents.values()
+        )
         alice_derived = next(
             derived
             for derived in stack.registry.derived_documents.values()
@@ -487,7 +496,8 @@ async def test_live_demo_stack_runs_complete_flow(monkeypatch, tmp_path):
             name, value = line.split("=", 1)
             role_env[name] = value
         assert role_env["EDOCS_DEMO_AGENT_ID"] == agent_id
-        assert "EDOCS_DEMO_CONTROL_URL" not in role_env
+        assert role_env["EDOCS_CONTROL_URL"] == stack.urls.control
+        assert "EDOCS_AGENT_RESOURCE_URL" in role_env
         claude_config = state_dir / "agents" / f"{role}.claude-mcp.json"
         assert role_env["EDOCS_CLAUDE_MCP_CONFIG"] == str(claude_config)
         claude_server = json.loads(claude_config.read_text())["mcpServers"][

@@ -58,14 +58,18 @@ class EdocsGateway:
             self.coordinator.ps_url,
         )
         self.consent_client = EdocsConsentClient(consent_transport)
+        self._refresh_providers()
+
+    def _refresh_providers(self) -> None:
+        directory = self.config.provider_directory()
         self.providers = {
-            provider.provider_id: provider
-            for provider in config.provider_directory()
+            provider.provider_id: provider for provider in directory
         }
-        if len(self.providers) != len(config.provider_directory()):
+        if len(self.providers) != len(directory):
             raise ValueError("provider IDs must be unique")
 
     def list_providers(self) -> dict[str, list[dict[str, str]]]:
+        self._refresh_providers()
         return {
             "providers": [
                 provider.public_dict() for provider in self.providers.values()
@@ -76,6 +80,7 @@ class EdocsGateway:
         self,
         provider_id: str,
     ) -> dict[str, list[dict[str, Any]]]:
+        self._refresh_providers()
         provider = self.providers.get(provider_id)
         if provider is None:
             raise ValueError(f"unknown provider: {provider_id}")
@@ -122,6 +127,7 @@ class EdocsGateway:
             consent_client=self.consent_client,
             prompt=approve,
         )
+        self._refresh_providers()
         provider, edoc_id = _resource_target(
             resource_uri,
             self.providers,
@@ -302,6 +308,104 @@ class EdocsGateway:
                     "function registry returned an invalid response"
                 )
         return body
+
+    async def publish_derived_edoc(
+        self,
+        derived_edoc_id: str,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        """Expose one custodian-owned derived eDoc on this agent's resource server."""
+        if not self.config.control_url:
+            raise RuntimeError("control panel URL is not configured")
+        if not self.config.agent_resource_url:
+            raise RuntimeError("agent resource URL is not configured")
+        if not self.config.agent_id:
+            raise RuntimeError("agent id is not configured")
+        options = {"follow_redirects": False}
+        if self.http_transport is not None:
+            options["transport"] = self.http_transport
+        async with httpx2.AsyncClient(**options) as client:
+            derived_response = await client.get(
+                f"{self.config.control_url}/api/sentinel/derived/{derived_edoc_id}"
+            )
+            if derived_response.status_code == 404:
+                raise LookupError(f"unknown derived eDoc: {derived_edoc_id}")
+            derived_body = derived_response.json()
+            if derived_response.status_code != 200:
+                detail = (
+                    derived_body.get("detail")
+                    if isinstance(derived_body, dict)
+                    else "derived eDoc lookup failed"
+                )
+                raise ValueError(detail or "derived eDoc lookup failed")
+            if derived_body.get("custodian") != self.config.agent_id:
+                raise PermissionError(
+                    "only the custodian agent may publish this derived eDoc"
+                )
+            if derived_body.get("published"):
+                raise ValueError("derived eDoc is already published")
+            controllers = derived_body["controllers"]
+            output = derived_body["output"]
+            if not isinstance(output, dict):
+                raise RuntimeError("derived eDoc payload is invalid")
+            publish_title = title or f"Published {derived_edoc_id}"
+            publish_description = description or (
+                "Derived eDoc published by its custodian agent"
+            )
+            catalog_response = await client.post(
+                f"{self.config.agent_resource_url}/admin/documents",
+                json={
+                    "edoc_id": derived_edoc_id,
+                    "title": publish_title,
+                    "description": publish_description,
+                    "storage": output,
+                    "controllers": controllers,
+                },
+            )
+            catalog_body = catalog_response.json()
+            if catalog_response.status_code not in {200, 201}:
+                detail = (
+                    catalog_body.get("detail")
+                    if isinstance(catalog_body, dict)
+                    else "failed to publish derived eDoc"
+                )
+                raise ValueError(detail or "failed to publish derived eDoc")
+            controller_response = await client.post(
+                f"{self.config.control_url}/api/sentinel/controllers",
+                json={
+                    "resource_issuer": self.config.agent_resource_url,
+                    "edoc_id": derived_edoc_id,
+                    "controllers": controllers,
+                },
+            )
+            controller_body = controller_response.json()
+            if controller_response.status_code not in {200, 201}:
+                detail = (
+                    controller_body.get("detail")
+                    if isinstance(controller_body, dict)
+                    else "failed to register derived controllers"
+                )
+                raise ValueError(detail or "failed to register derived controllers")
+        self._refresh_providers()
+        provider_id = None
+        for item in self.providers.values():
+            origin = item.mcp_url.rstrip("/").removesuffix("/mcp")
+            if origin == self.config.agent_resource_url.rstrip("/"):
+                provider_id = item.provider_id
+                break
+        resource_uri = (
+            catalog_body.get("document", {}).get("resource_uri")
+            if isinstance(catalog_body, dict)
+            else None
+        )
+        return {
+            "derived_edoc_id": derived_edoc_id,
+            "provider_id": provider_id,
+            "resource_uri": resource_uri,
+            "controllers": controllers,
+        }
 
 
 def _remote_tool(function_id: str) -> str:

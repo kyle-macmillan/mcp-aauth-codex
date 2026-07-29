@@ -18,11 +18,15 @@ Set these variables before starting a coding-agent host:
 - `EDOCS_AGENT_TOKEN_FILE`: path to the agent token
 - `EDOCS_AGENT_KEY_FILE`: path to the agent's private JWK
 - `EDOCS_PERSON`: prototype Person Server login identity used by the demo
+- `EDOCS_CONTROL_URL`: localhost control panel (set by `new_agent` for publish)
+- `EDOCS_AGENT_RESOURCE_URL`: this agent's resource server (set by `new_agent`)
+- `EDOCS_DEMO_AGENT_ID`: this agent's AAuth identity (set by `new_agent`)
 
 The plugin provides `list_providers()`,
 `list_resources(provider_ref)`, and
 `list_edocs_functions()`, plus
-`invoke_edocs_function(resource_ref, function_id, arguments)`.
+`invoke_edocs_function(resource_ref, function_id, arguments)` and
+`publish_derived_edoc(derived_edoc_id)` when the agent hosts a resource server.
 Provider listing comes from the bridge's directory, while resource listing is
 forwarded live to the selected provider's MCP server without starting a
 consent flow. Provider and resource references are opaque and scoped to the
@@ -106,10 +110,13 @@ files. The generated configurations live under
 `.demo-state/agents/{producer,carol,bob}.{env,jwk,token}` with mode `0600`.
 The existing `run_demo.sh` remains the single-window Producer launcher.
 
-Carol and Bob can currently demonstrate independent identity and public
-provider discovery. Invoking the producer's derived output from those sessions
-is intentionally not wired yet: the derived-resource service and dynamic
-destination handling remain deferred.
+Carol and Bob can demonstrate independent identity and public provider
+discovery. After Producer successfully invokes an upstream function, the
+result includes a `derived_edoc_id`. Producer must call `publish_derived_edoc`
+to expose that output on Producer's own resource server. Alice remains the
+controller via inherited controllers; Carol can then invoke `identity@1` on
+the published eDoc through Sentinel, while Bob is still denied by Alice's
+policy.
 
 The launchers compose the shared AAuth Agent Provider, Person Server, and
 Sentinel with three independent provider domains. Alice, Bob, and Carol each
@@ -193,7 +200,10 @@ provider function completes successfully, the provider records a derived eDoc
 with a unique opaque ID, the exact producer dataflow, output digest, Producer as
 custodian, and inherited controllers. The Sentinel dashboard shows these
 derived eDocs and their provenance. Alice's future-output rule begins matching
-the concrete derived ID only after this registration.
+the concrete derived ID only after this registration. The derived eDoc is not
+discoverable to peers until the custodian agent publishes it with
+`publish_derived_edoc`, which catalogs it on that agent's resource server and
+registers the inherited controllers with the Sentinel.
 
 In either coding agent, ask:
 

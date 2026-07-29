@@ -58,6 +58,7 @@ from .demo_database import (
     setup_demo_database,
 )
 from .control_panel import DemoProviderAdmin, create_control_panel
+from .derived_store import DerivedPayloadStore
 from .functions import (
     DEMO_FUNCTION_SQL,
     IDENTITY_FUNCTION_ID,
@@ -224,6 +225,7 @@ class DemoStack:
         self.policies: dict[str, MutableControllerPolicy] = {}
         self.catalogs: dict[str, ProviderCatalog] = {}
         self.function_registry = MutableFunctionRegistry()
+        self.derived_store = DerivedPayloadStore(state_dir)
         self._build()
 
     def _build(self) -> None:
@@ -389,6 +391,7 @@ class DemoStack:
             function_registry=self.function_registry,
             register_function=self._function_registrar(),
             agents=DEMO_AGENTS,
+            derived_store=self.derived_store,
         )
         self.services = [
             FlaskService(ap, _port(urls.ap)),
@@ -567,14 +570,16 @@ class DemoStack:
         producer: Dataflow,
         output: dict[str, Any],
         controllers: tuple[str, ...],
-    ) -> None:
+    ):
         assert self.registry is not None
-        register_materialization(
+        derived = register_materialization(
             self.registry,
             producer=producer,
             output=output,
             controllers=controllers,
         )
+        self.derived_store.write(derived, output)
+        return derived
 
     def _function_registrar(self):
         def register(body: dict[str, Any]) -> LoadedFunction:

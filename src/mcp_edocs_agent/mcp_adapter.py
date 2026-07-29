@@ -28,8 +28,11 @@ SERVER_INSTRUCTIONS = (
     "returned provider_ref. Call list_edocs_functions to discover registered "
     "function IDs and input schemas. Invoke only with a resource_ref returned "
     "by list_resources and the exact function and arguments the user requested. "
-    "References are opaque and session-scoped; never invent or alter them. "
-    "Invocation may pause for a separate eDocs consent decision."
+    "Successful invocations may return derived_edoc_id; call "
+    "publish_derived_edoc with that id to expose the result on this agent's "
+    "resource server for peers. References are opaque and session-scoped; "
+    "never invent or alter them. Invocation may pause for a separate eDocs "
+    "consent decision."
 )
 
 READ_ONLY = ToolAnnotations(
@@ -193,6 +196,29 @@ def build_server(
             arguments,
             prompt,
         )
+
+    if config.agent_resource_url and config.control_url:
+
+        @server.tool(
+            description=(
+                "Publish a derived eDoc this agent obtained from a prior "
+                "successful invoke_edocs_function. Pass the derived_edoc_id "
+                "from that result. Publishing makes the resource discoverable "
+                "and invocable by peers through Sentinel; it does not create "
+                "policy."
+            ),
+            annotations=ADDITIVE,
+        )
+        async def publish_derived_edoc(
+            derived_edoc_id: str,
+            title: str | None = None,
+            description: str | None = None,
+        ) -> dict[str, Any]:
+            return await gateway.publish_derived_edoc(
+                derived_edoc_id,
+                title=title,
+                description=description,
+            )
 
     if config.function_registry_url:
 

@@ -76,6 +76,17 @@ def query_table(
     }
 
 
+def _identity_implementation(
+    document: Any,
+    _arguments: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a published payload object, or a stub for non-payload storage."""
+    storage = getattr(document, "storage", document)
+    if isinstance(storage, dict):
+        return dict(storage)
+    return {"edoc_id": getattr(document, "edoc_id", str(document))}
+
+
 def local_query_table_registration() -> LoadedFunction:
     """Return the descriptor and local implementation used by the demo."""
     artifact = Path(__file__).read_bytes()
@@ -103,7 +114,7 @@ def local_demo_function_registrations() -> dict[str, LoadedFunction]:
     registrations = {
         "query_table@1": local_query_table_registration(),
     }
-    identity_source = b"return the governed eDoc unchanged"
+    identity_source = b"return the governed eDoc payload unchanged"
     registrations[IDENTITY_FUNCTION_ID] = LoadedFunction(
         FunctionDescriptor(
             id=IDENTITY_FUNCTION_ID,
@@ -118,9 +129,7 @@ def local_demo_function_registrations() -> dict[str, LoadedFunction]:
                 "additionalProperties": False,
             },
         ),
-        lambda document, _arguments: {
-            "edoc_id": getattr(document, "edoc_id", str(document))
-        },
+        _identity_implementation,
     )
     for function_id, statement in DEMO_FUNCTION_SQL.items():
         digest = f"sha256:{hashlib.sha256(statement.encode()).hexdigest()}"
